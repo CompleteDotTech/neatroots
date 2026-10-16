@@ -117,9 +117,9 @@ uv run agent.py "Please refund order 1001"
 MODEL=mock-sloppy uv run agent.py "Please refund order 4512"   # claims success after a failed tool
 ```
 
-Open http://localhost:4100 and click the run. `sh ~/.neatroots/app/examples/run-all.sh` runs and
-checks the automated agent examples and the HTTP API example. Run `browser`, `import-files`,
-`refund-agent`, and `samples` separately/by hand. [examples/](examples) lists them: OpenAI, Anthropic,
+Open http://localhost:4100 and click the run. `sh ~/.neatroots/app/examples/run-all.sh` runs the
+automated agent examples and the HTTP API example, and checks that each produced a run.
+Run `browser`, `import-files`, `refund-agent`, and `samples` separately/by hand. [examples/](examples) lists them: OpenAI, Anthropic,
 LangGraph, OpenAI Agents SDK handoffs, sub-agents, multi-turn sessions, replay, plain OpenTelemetry,
 TypeScript, Vercel AI SDK, the HTTP API, a browser page, and trace files to import.
 
