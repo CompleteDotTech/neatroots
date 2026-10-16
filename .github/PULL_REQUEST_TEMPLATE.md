@@ -6,7 +6,7 @@
 
 ## Validation
 <!-- List exact commands and results, including checks not run and why. -->
-See [CONTRIBUTING.md](https://github.com/neatlogs/neatroots/blob/main/CONTRIBUTING.md#validating-a-change) for project guidance.
+See [CONTRIBUTING.md](../CONTRIBUTING.md#validating-a-change) for project guidance.
 
 Related issue: <!-- Add an issue link or number; remove if none. -->
 
