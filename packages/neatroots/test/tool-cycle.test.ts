@@ -6,10 +6,11 @@ import { loadTrace } from "../src/engine/trace.js";
 import { evaluateRule } from "../src/checks/rules.js";
 import { parseChecks } from "../src/checks/registry.js";
 import type { RuleCheck } from "../src/checks/types.js";
-import { batch, hex, tmpHome, toolSpan } from "./helpers.js";
+import { batch, closeTrackedStores, hex, tmpHome, toolSpan, trackedStore } from "./helpers.js";
 
 const homes: string[] = [];
 afterEach(() => {
+  closeTrackedStores();
   for (const h of homes.splice(0)) fs.rmSync(h, { recursive: true, force: true });
 });
 const rule = parseChecks(fs.readFileSync(new URL("../library/rules.yaml", import.meta.url), "utf8")).checks.find((c) => c.id === "tool-cycle") as RuleCheck;
@@ -19,18 +20,22 @@ type Call = [name: string, input: string, output: string];
 function fires(calls: Call[]): boolean {
   const h = tmpHome();
   homes.push(h);
-  const st = new Store(path.join(h, "data"));
-  const t = hex(16);
-  const root = hex(8);
-  const spans = calls.map(([n, i, o], k) => {
-    const sp = toolSpan(t, root, n, i, o);
-    sp.startTimeUnixNano = String(BigInt(1_700_000_000_000 + k * 1000) * 1_000_000n);
-    sp.endTimeUnixNano = String(BigInt(1_700_000_000_500 + k * 1000) * 1_000_000n);
-    return sp;
-  });
-  st.ingest([batch(spans)]);
-  const hit = evaluateRule(rule, loadTrace(st, t)!, false);
-  return !!hit;
+  const st = trackedStore(path.join(h, "data"));
+  try {
+    const t = hex(16);
+    const root = hex(8);
+    const spans = calls.map(([n, i, o], k) => {
+      const sp = toolSpan(t, root, n, i, o);
+      sp.startTimeUnixNano = String(BigInt(1_700_000_000_000 + k * 1000) * 1_000_000n);
+      sp.endTimeUnixNano = String(BigInt(1_700_000_000_500 + k * 1000) * 1_000_000n);
+      return sp;
+    });
+    st.ingest([batch(spans)]);
+    const hit = evaluateRule(rule, loadTrace(st, t)!, false);
+    return !!hit;
+  } finally {
+    st.close();
+  }
 }
 
 const TOOLS = ["search", "fetch", "read_file", "edit_file", "run_tests", "list_dir"];

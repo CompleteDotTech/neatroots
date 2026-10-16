@@ -6,26 +6,31 @@ import { loadTrace } from "../src/engine/trace.js";
 import { evaluateRule } from "../src/checks/rules.js";
 import { parseChecks } from "../src/checks/registry.js";
 import type { RuleCheck } from "../src/checks/types.js";
-import { batch, hex, tmpHome, toolSpan } from "./helpers.js";
+import { batch, closeTrackedStores, hex, tmpHome, toolSpan, trackedStore } from "./helpers.js";
 
 const homes: string[] = [];
 afterEach(() => {
+  closeTrackedStores();
   for (const h of homes.splice(0)) fs.rmSync(h, { recursive: true, force: true });
 });
 function store(): Store {
   const h = tmpHome();
   homes.push(h);
-  return new Store(path.join(h, "data"));
+  return trackedStore(path.join(h, "data"));
 }
 const lib = parseChecks(fs.readFileSync(new URL("../library/rules.yaml", import.meta.url), "utf8")).checks as RuleCheck[];
 const rule = lib.find((c) => c.id === "repeated-tool-call")!;
 
 function run(calls: Array<{ input: string; output?: string; error?: string }>) {
   const st = store();
-  const t = hex(16);
-  const root = hex(8);
-  st.ingest([batch(calls.map((c) => toolSpan(t, root, "search", c.input, c.output, c.error)))]);
-  return evaluateRule(rule, loadTrace(st, t), false);
+  try {
+    const t = hex(16);
+    const root = hex(8);
+    st.ingest([batch(calls.map((c) => toolSpan(t, root, "search", c.input, c.output, c.error)))]);
+    return evaluateRule(rule, loadTrace(st, t), false);
+  } finally {
+    st.close();
+  }
 }
 
 describe("repeated-tool-call compares the result", () => {

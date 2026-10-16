@@ -4,15 +4,16 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Store } from "../src/store/db.js";
 import { computeInsights } from "../src/store/insights.js";
 import { digestData, groundedNumbers } from "../src/engine/digest.js";
-import { batch, hex, llmSpan, span, tmpHome, toolSpan } from "./helpers.js";
+import { batch, closeTrackedStores, hex, llmSpan, span, tmpHome, toolSpan, trackedStore } from "./helpers.js";
 
 const homes: string[] = [];
 function store(): Store {
   const h = tmpHome();
   homes.push(h);
-  return new Store(path.join(h, "data"));
+  return trackedStore(path.join(h, "data"));
 }
 afterEach(() => {
+  closeTrackedStores();
   for (const h of homes.splice(0)) fs.rmSync(h, { recursive: true, force: true });
 });
 

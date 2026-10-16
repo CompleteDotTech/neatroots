@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-24.04, macos-14]
+        runner: [ubuntu-24.04, macos-14, windows-2022]
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -31,6 +31,7 @@ jobs:
           python -m pip install -e "python/neatroots-steer[test]"
           python -m pytest python/neatroots-steer -q
       - name: Installer, from a freshly packaged bundle
+        if: runner.os != 'Windows'
         run: |
           sh -n install.sh
           node scripts/package.mjs

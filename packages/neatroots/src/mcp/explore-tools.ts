@@ -24,13 +24,8 @@ const brief = (s: SpanInfo) => ({
 
 const SQL_TABLES = "runs, spans, sessions, findings, decisions, explanations, notes, summaries, annotations, logs, checks, plans, replays";
 
-let readonlyDb: { file: string; db: Database.Database } | undefined;
 function readonly(roots: Roots): Database.Database {
-  if (readonlyDb?.file !== roots.store.file) {
-    readonlyDb?.db.close();
-    readonlyDb = { file: roots.store.file, db: new Database(roots.store.file, { readonly: true, fileMustExist: true }) };
-  }
-  return readonlyDb.db;
+  return new Database(roots.store.file, { readonly: true, fileMustExist: true });
 }
 
 export const EXPLORE_TOOLS = [
@@ -181,16 +176,21 @@ export const EXPLORE_TOOLS = [
     run: async (roots, a) => {
       const sql = a.sql.trim().replace(/;+\s*$/, "");
       if (!/^(select|with)\b/i.test(sql) || /;/.test(sql)) throw new Error("only a single SELECT (or WITH … SELECT) statement is allowed");
-      const stmt = readonly(roots).prepare(sql);
-      if (!stmt.reader) throw new Error("only queries that return rows are allowed");
-      // Step through rows and stop one past the cap: all() would run the whole query first, so a
-      // huge or unbounded one (e.g. a recursive CTE) blocks the event loop or never returns.
-      const rows: Record<string, unknown>[] = [];
-      for (const r of stmt.iterate() as IterableIterator<Record<string, unknown>>) {
-        rows.push(r);
-        if (rows.length > 200) break;
+      const db = readonly(roots);
+      try {
+        const stmt = db.prepare(sql);
+        if (!stmt.reader) throw new Error("only queries that return rows are allowed");
+        // Step through rows and stop one past the cap: all() would run the whole query first, so a
+        // huge or unbounded one (e.g. a recursive CTE) blocks the event loop or never returns.
+        const rows: Record<string, unknown>[] = [];
+        for (const r of stmt.iterate() as IterableIterator<Record<string, unknown>>) {
+          rows.push(r);
+          if (rows.length > 200) break;
+        }
+        return { rows: rows.slice(0, 200).map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, typeof v === "string" ? clip(v, 2000) : v]))), truncated: rows.length > 200 };
+      } finally {
+        db.close();
       }
-      return { rows: rows.slice(0, 200).map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, typeof v === "string" ? clip(v, 2000) : v]))), truncated: rows.length > 200 };
     },
   }),
   def({
