@@ -1,0 +1,6 @@
+interface:
+  display_name: "Project Delivery Orchestrator"
+  short_description: "Coordinate agents, review changes, and triage PRs"
+  default_prompt: "Use $orchestrate-project-delivery to coordinate this task through bounded workers, parent review, and the authorized delivery endpoint."
+policy:
+  allow_implicit_invocation: true
