@@ -9,13 +9,17 @@ import type { RuleCheck } from "../src/checks/types.js";
 import { batch, hex, llmSpan, s, span, tmpHome, toolSpan } from "./helpers.js";
 
 const homes: string[] = [];
+const stores: Store[] = [];
 afterEach(() => {
+  for (const st of stores.splice(0)) st.close();
   for (const h of homes.splice(0)) fs.rmSync(h, { recursive: true, force: true });
 });
 function store(): Store {
   const h = tmpHome();
   homes.push(h);
-  return new Store(path.join(h, "data"));
+  const st = new Store(path.join(h, "data"));
+  stores.push(st);
+  return st;
 }
 const lib = parseChecks(fs.readFileSync(new URL("../library/rules.yaml", import.meta.url), "utf8")).checks as RuleCheck[];
 const check = lib.find((c) => c.id === "unrecovered-tool-failure")!;
@@ -23,13 +27,20 @@ const check = lib.find((c) => c.id === "unrecovered-tool-failure")!;
 interface Step {
   tool: string;
   fail?: boolean;
+  parent?: string;
 }
 /** One run: the given tool calls in order, then a final answer (or none), then the root. */
 function run(st: Store, steps: Step[], opts: { answer?: string | null; rootError?: string } = {}): string {
   const t = hex(16);
   const root = hex(8);
   const spans = [llmSpan(t, root, { user: "do the task", out: "ok" })];
-  for (const x of steps) spans.push(x.fail ? toolSpan(t, root, x.tool, '{"a":1}', undefined, "HTTP 503 upstream timeout") : toolSpan(t, root, x.tool, '{"a":1}', '{"ok":true}'));
+  const parents = new Map<string, string>();
+  for (const x of steps) if (x.parent && !parents.has(x.parent)) parents.set(x.parent, hex(8));
+  for (const [name, id] of parents) spans.push(span({ traceId: t, spanId: id, parent: root, name, kind: "agent" }));
+  for (const x of steps) {
+    const parent = x.parent ? parents.get(x.parent)! : root;
+    spans.push(x.fail ? toolSpan(t, parent, x.tool, '{"a":1}', undefined, "HTTP 503 upstream timeout") : toolSpan(t, parent, x.tool, '{"a":1}', '{"ok":true}'));
+  }
   const answer = opts.answer === undefined ? "All done, it worked." : opts.answer;
   spans.push(
     span({
@@ -56,6 +67,7 @@ describe("unrecovered_error rule", () => {
   it("fires when a tool failed and the run still answered", () => {
     const st = store();
     const t = run(st, [{ tool: "lookup_order" }, { tool: "issue_refund", fail: true }]);
+    expect(st.getRun(t)).toMatchObject({ status: "ok", error_count: 1 });
     const h = hit(st, t)!;
     expect(h.firing).toBe(true);
     expect(h.evidenceSpanIds).toHaveLength(1);
@@ -68,6 +80,27 @@ describe("unrecovered_error rule", () => {
     const st = store();
     const t = run(st, [{ tool: "issue_refund", fail: true }, { tool: "issue_refund" }]);
     expect(hit(st, t)).toBeNull();
+  });
+
+  it("stays quiet when a nested retry succeeds under the same parent", () => {
+    const st = store();
+    const t = run(st, [
+      { tool: "issue_refund", fail: true, parent: "worker-a" },
+      { tool: "issue_refund", parent: "worker-a" },
+    ]);
+    expect(hit(st, t)).toBeNull();
+  });
+
+  it("does not treat another parent's same-name success as recovery", () => {
+    const st = store();
+    const t = run(st, [
+      { tool: "issue_refund", fail: true, parent: "worker-a" },
+      { tool: "issue_refund", parent: "worker-b" },
+    ]);
+    const h = hit(st, t)!;
+    expect(h.firing).toBe(true);
+    expect(h.evidenceSpanIds).toHaveLength(1);
+    expect(h.params.tool).toBe("issue_refund");
   });
 
   it("still fires when a different tool succeeded after the failure", () => {

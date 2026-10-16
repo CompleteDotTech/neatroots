@@ -219,9 +219,9 @@ export function evaluateRule(check: RuleCheck, t: TraceSnapshot, atEnd: boolean,
       // An answer that says something failed is the agent being honest, not a problem.
       if (ADMITS_FAILURE.test(out.replace(DENIES_FAILURE, " "))) return null;
       const spans = selectSpans(t.spans, r.span ?? { type: ["tool", "mcp_tool"] }).sort((a, b) => a.endMs - b.endMs || a.seq - b.seq);
-      // The last call of each tool decides it: a later success means the agent recovered.
+      // A retry only recovers a call from the same parent; another agent's same-named tool is separate.
       const last = new Map<string, SpanInfo>();
-      for (const s of spans) last.set(s.toolName ?? s.name, s);
+      for (const s of spans) last.set(JSON.stringify([s.parentId, s.toolName ?? s.name]), s);
       const failed = [...last.values()].filter((s) => s.status === "error");
       if (!failed.length) return null;
       const first = failed[0];
