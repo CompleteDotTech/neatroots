@@ -22,7 +22,7 @@ cd packages/steer-ts && pnpm test
 cd python/neatroots-steer && python -m pytest  # needs a venv with pytest
 pnpm --filter @neatlogs/neatroots typecheck && pnpm --filter @neatlogs/neatroots-ui typecheck
 pnpm --filter @neatlogs/neatroots-ui e2e   # Playwright: builds nothing, so pnpm build first
-sh examples/run-all.sh                     # every example, against a running neatroots
+sh examples/run-all.sh                     # 11 automated examples, against a running neatroots
 ```
 
 ## Conventions

@@ -100,4 +100,7 @@ primitives (`packages/ui/src/components/{ui,neat-ui,list-page,detail,kpi}`).
   replays through a real child process, MCP tools and the mock LLM.
 - `packages/ui/e2e`: Playwright against a real server built from the repo, with an isolated home
   folder, the mock LLM and seeded runs.
-- `examples/run-all.sh`: every example against a running neatroots. CI runs all three.
+- `examples/run-all.sh`: the 11 automated entries from the 15 documented example directories,
+  checked against a running neatroots. The `browser`, `import-files`, `refund-agent`, and `samples`
+  directories are manual scenarios. CI runs the server and steering checks, UI end-to-end tests, and
+  this example runner.

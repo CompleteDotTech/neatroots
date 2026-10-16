@@ -108,7 +108,7 @@ model.
 
 ## Try it in two minutes, without API keys
 
-The bundle ships 15 runnable examples and a mock LLM that speaks the OpenAI and Anthropic APIs:
+The bundle ships 15 example directories and a mock LLM that speaks the OpenAI and Anthropic APIs:
 
 ```bash
 neatroots mock-llm &
@@ -117,10 +117,12 @@ uv run agent.py "Please refund order 1001"
 MODEL=mock-sloppy uv run agent.py "Please refund order 4512"   # claims success after a failed tool
 ```
 
-Open http://localhost:4100 and click the run. `sh ~/.neatroots/app/examples/run-all.sh` runs every
-example and checks each one produced a run. [examples/](examples) lists them: OpenAI, Anthropic,
-LangGraph, OpenAI Agents SDK handoffs, sub-agents, multi-turn sessions, replay, plain OpenTelemetry,
-TypeScript, Vercel AI SDK, the HTTP API, a browser page, and trace files to import.
+Open http://localhost:4100 and click the run. `sh ~/.neatroots/app/examples/run-all.sh` runs the 11
+automated examples and checks each one produced a run. The other four directories—`browser`,
+`import-files`, `refund-agent`, and `samples`—are manual scenarios. [examples/](examples) lists all
+15: OpenAI, Anthropic, LangGraph, OpenAI Agents SDK handoffs, sub-agents, multi-turn sessions, replay,
+plain OpenTelemetry, TypeScript, Vercel AI SDK, the HTTP API, a browser page, trace files to import,
+steering, and scripted failure scenarios.
 
 ## Send your agent's runs
 
@@ -275,7 +277,7 @@ can read) and never in the database.
 | `packages/ui` | The web app (React, Tailwind, the Neatlogs design system) and its Playwright tests |
 | `packages/steer-ts`, `python/neatroots-steer` | The steering and replay hooks for TypeScript and Python |
 | `packages/neatroots/library` | Starter rules and the open question library |
-| `examples/` | 15 runnable agents across SDKs, frameworks and ingestion paths |
+| `examples/` | 15 example directories across SDKs, frameworks and ingestion paths; 11 are automated by `run-all.sh` |
 | `skills/` | Skills for coding agents |
 | `install.sh`, `scripts/package.mjs` | The installer and the release bundle |
 
@@ -287,7 +289,7 @@ pnpm test                     # server tests (vitest)
 pnpm --filter @neatlogs/neatroots-ui e2e     # UI end-to-end tests (Playwright; real server, mock LLM)
 cd packages/steer-ts && pnpm test
 cd python/neatroots-steer && python -m pytest
-sh examples/run-all.sh        # every example, against a running neatroots
+sh examples/run-all.sh        # 11 automated examples, against a running neatroots
 pnpm --filter @neatlogs/neatroots dev        # server with reload on 4100
 pnpm --filter @neatlogs/neatroots-ui dev     # UI on 5173 (set NEATROOTS_DEV_ORIGIN=http://localhost:5173 on the server)
 ```

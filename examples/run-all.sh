@@ -1,8 +1,8 @@
 #!/bin/sh
-# Runs every example against neatroots and the mock LLM, and checks each one produced a run.
+# Runs the 11 examples in PAIRS against neatroots and the mock LLM, checking each produced a run.
 #
 #   neatroots start                      # in another terminal (or as a service)
-#   sh examples/run-all.sh               # all of them
+#   sh examples/run-all.sh               # all 11 automated examples
 #   sh examples/run-all.sh python-openai typescript-openai
 #
 # Needs uv (Python examples) and Node 22+ (TypeScript examples). No API keys.
@@ -13,7 +13,7 @@ MOCK="${MOCK_LLM_URL:-http://127.0.0.1:4110/v1}"
 NEATROOTS="${NEATROOTS_BIN:-neatroots}"
 
 STATUS=$(curl -sf "$URL/api/status") || { echo "neatroots isn't answering at $URL. Start it: neatroots start"; exit 1; }
-# Every example sends to this instance, whatever ports it runs on.
+# Every automated example sends to this instance, whatever ports it runs on.
 GRPC_PORT=$(printf '%s' "$STATUS" | python3 -c "import sys,json; print(json.load(sys.stdin).get('config',{}).get('grpc_port') or '')" 2>/dev/null)
 export NEATROOTS_URL="$URL" NEATLOGS_ENDPOINT="$URL" NEATLOGS_API_KEY="${NEATLOGS_API_KEY:-neatroots-local}"
 [ -n "$GRPC_PORT" ] && export NEATROOTS_GRPC="localhost:$GRPC_PORT"

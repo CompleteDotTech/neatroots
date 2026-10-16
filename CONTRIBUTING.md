@@ -117,6 +117,10 @@ In another terminal at the repository root:
 NEATROOTS_BIN="node $PWD/packages/neatroots/dist/cli.js" sh examples/run-all.sh
 ```
 
+The runner automates 11 of the 15 example directories. `browser`, `import-files`, `refund-agent`,
+and `samples` are manual scenarios; see [examples/README.md](examples/README.md) for their
+instructions.
+
 Use a checkout path without spaces for this command: the runner splits `NEATROOTS_BIN` into
 command arguments. The runner starts the mock LLM if needed. Examples need no provider API
 keys by default; individual examples support `REAL_LLM=1` for explicitly requested live runs.

@@ -26,7 +26,9 @@ The installer:
 
 You need macOS or Linux (on Windows, use WSL) and about 70 MB of disk, plus about 1.5 GB if you download Laya.
 
-Everything lands in `~/.neatroots/app`: the app, the steering hooks (`steer/`), the docs, and 15 runnable examples (`examples/`).
+Everything lands in `~/.neatroots/app`: the app, the steering hooks (`steer/`), the docs, and 15
+example directories (`examples/`). The runner automates 11; `browser`, `import-files`,
+`refund-agent`, and `samples` are manual scenarios.
 
 Installer options go after `sh -s --`, for example `curl … | sh -s -- --service`:
 
@@ -125,10 +127,12 @@ neatroots mock-llm &                                    # port 4110
 cd ~/.neatroots/app/examples/python-openai
 uv run agent.py "Please refund order 1001"
 MODEL=mock-sloppy uv run agent.py "Please refund order 4512"   # the agent claims success after a failed tool
-sh ~/.neatroots/app/examples/run-all.sh                 # every example, checked
+sh ~/.neatroots/app/examples/run-all.sh                 # 11 automated examples, checked
 ```
 
-`~/.neatroots/app/examples/README.md` lists all fifteen. Set `REAL_LLM=1` to use your own `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` instead of the mock.
+`~/.neatroots/app/examples/README.md` lists all 15 example directories and their instructions. Where
+supported, set `REAL_LLM=1` to use your own `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` instead of the
+mock.
 
 ### Your agent, with the Neatlogs SDK
 

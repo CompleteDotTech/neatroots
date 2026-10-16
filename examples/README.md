@@ -1,8 +1,9 @@
 # Examples
 
-Every example sends real runs to neatroots and runs without API keys: they use neatroots' mock
-LLM by default (`neatroots mock-llm`, an OpenAI- and Anthropic-compatible stand-in). Set
-`REAL_LLM=1` to use your own `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` instead.
+The examples show different ways to create or import runs in neatroots. The runner uses neatroots'
+mock LLM (`neatroots mock-llm`, an OpenAI- and Anthropic-compatible stand-in) for examples that call
+an LLM and needs no provider API keys. Some individual agent examples also support `REAL_LLM=1` to
+use your own `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` instead.
 
 ```bash
 neatroots start               # terminal 1
@@ -10,8 +11,12 @@ neatroots mock-llm            # terminal 2
 cd examples/python-openai && uv run agent.py "Please refund order 1001"
 ```
 
-Then open http://localhost:4100. To run them all and check each produced a run:
-`sh examples/run-all.sh`. With the installer, they are in `~/.neatroots/app/examples`.
+Then open http://localhost:4100. `sh examples/run-all.sh` runs and checks 11 automated examples:
+`python-openai`, `python-anthropic`, `python-langgraph`, `python-openai-agents`, `python-sessions`,
+`python-sub-agents`, `python-replay`, `python-opentelemetry`, `typescript-openai`,
+`typescript-vercel-ai`, and `http-api`. The other four directories—`browser`, `import-files`,
+`refund-agent`, and `samples`—are manual scenarios; use the instructions in each directory.
+With the installer, they are in `~/.neatroots/app/examples`.
 
 | Example | Language | How it sends runs | Shows |
 | --- | --- | --- | --- |

@@ -73,7 +73,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
-      - name: Every example, against neatroots and the mock LLM (no API keys)
+      - name: 11 automated examples, against neatroots and the mock LLM (no API keys)
         env:
           NEATROOTS_HOME: ${{ runner.temp }}/neatroots-home
           NEATROOTS_BIN: node ${{ github.workspace }}/packages/neatroots/dist/cli.js
