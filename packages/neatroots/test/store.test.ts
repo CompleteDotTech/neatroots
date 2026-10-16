@@ -222,7 +222,6 @@ describe("store", () => {
       for (const t of ids.slice(1, 1 + removed)) expect(st.getRun(t), label).toBeUndefined(); // exactly the oldest went
       for (const t of ids.slice(1 + removed)) expect(st.getRun(t), label).toBeDefined();
       expect(st.sweep(999_999, cap), label).toBe(0); // the next sweep has nothing to do
-      st.close();
     }
   });
 

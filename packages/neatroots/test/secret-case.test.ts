@@ -6,11 +6,10 @@ import { loadTrace } from "../src/engine/trace.js";
 import { evaluateRule } from "../src/checks/rules.js";
 import { parseChecks } from "../src/checks/registry.js";
 import type { RuleCheck } from "../src/checks/types.js";
-import { batch, closeTrackedStores, hex, llmSpan, tmpHome, trackedStore } from "./helpers.js";
+import { batch, hex, llmSpan, tmpHome } from "./helpers.js";
 
 const homes: string[] = [];
 afterEach(() => {
-  closeTrackedStores();
   for (const h of homes.splice(0)) fs.rmSync(h, { recursive: true, force: true });
 });
 
@@ -20,7 +19,7 @@ const check = lib.checks.find((c) => c.id === "secret-in-output") as RuleCheck;
 function fires(output: string): boolean {
   const h = tmpHome();
   homes.push(h);
-  const st = trackedStore(path.join(h, "data"));
+  const st = new Store(path.join(h, "data"));
   try {
     const t = hex(16);
     st.ingest([batch([llmSpan(t, hex(8), { user: "hi", out: output })])]);

@@ -63,7 +63,7 @@ const CLEAN = [
 function fires(output: string): boolean {
   const h = tmpHome();
   homes.push(h);
-  const st = trackedStore(path.join(h, "data"));
+  const st = new Store(path.join(h, "data"));
   try {
     const t = hex(16);
     st.ingest([batch([toolSpan(t, hex(8), "lookup", '{"q":"x"}', output)])]);

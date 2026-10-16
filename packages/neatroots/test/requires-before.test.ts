@@ -37,7 +37,7 @@ interface Call {
 function run(calls: Call[]) {
   const h = tmpHome();
   homes.push(h);
-  const st = trackedStore(path.join(h, "data"));
+  const st = new Store(path.join(h, "data"));
   try {
     const t = hex(16);
     const root = hex(8);
@@ -59,7 +59,7 @@ describe("requires_before", () => {
   });
 
   it("stays quiet when the lookup came first", () => {
-    expect(run([{ tool: "lookup_order" }, { tool: "issue_refund" }])).toBeNull();
+    expect(run([{ tool: "lookup_order" }, { tool: "issue_refund" }])?.firing).toBe(false);
   });
 
   it("fires when the refund has no lookup at all", () => {
@@ -77,7 +77,7 @@ describe("requires_before", () => {
     const lookup = toolSpan(t, root, "lookup_order", "{}", '{"ok":true}');
     lookup.status = { code: 0 };
     st.ingest([batch([lookup, toolSpan(t, root, "issue_refund", "{}", '{"ok":true}')])]);
-    expect(evaluateRule(check, loadTrace(st, t), false)).toBeNull();
+    expect(evaluateRule(check, loadTrace(st, t), false)?.firing).toBe(false);
   });
 
   it("fires when the lookup failed", () => {
@@ -97,7 +97,7 @@ describe("requires_before", () => {
   });
 
   it("does not guess when the two calls started together", () => {
-    expect(run([{ tool: "lookup_order" }, { tool: "issue_refund", parallel: true }])).toBeNull();
+    expect(run([{ tool: "lookup_order" }, { tool: "issue_refund", parallel: true }])?.firing).toBe(false);
   });
 
   it("labeled smoke: 120 generated runs, every verdict matches the label", () => {

@@ -9,17 +9,13 @@ import type { RuleCheck } from "../src/checks/types.js";
 import { batch, hex, llmSpan, s, span, tmpHome, toolSpan } from "./helpers.js";
 
 const homes: string[] = [];
-const stores: Store[] = [];
 afterEach(() => {
-  for (const st of stores.splice(0)) st.close();
   for (const h of homes.splice(0)) fs.rmSync(h, { recursive: true, force: true });
 });
 function store(): Store {
   const h = tmpHome();
   homes.push(h);
-  const st = new Store(path.join(h, "data"));
-  stores.push(st);
-  return st;
+  return new Store(path.join(h, "data"));
 }
 const lib = parseChecks(fs.readFileSync(new URL("../library/rules.yaml", import.meta.url), "utf8")).checks as RuleCheck[];
 const check = lib.find((c) => c.id === "unrecovered-tool-failure")!;

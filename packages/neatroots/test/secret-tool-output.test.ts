@@ -6,11 +6,10 @@ import { loadTrace } from "../src/engine/trace.js";
 import { evaluateRule } from "../src/checks/rules.js";
 import { parseChecks } from "../src/checks/registry.js";
 import type { RuleCheck } from "../src/checks/types.js";
-import { batch, closeTrackedStores, hex, llmSpan, tmpHome, toolSpan, trackedStore } from "./helpers.js";
+import { batch, hex, llmSpan, tmpHome, toolSpan } from "./helpers.js";
 
 const homes: string[] = [];
 afterEach(() => {
-  closeTrackedStores();
   for (const h of homes.splice(0)) fs.rmSync(h, { recursive: true, force: true });
 });
 const lib = parseChecks(fs.readFileSync(new URL("../library/rules.yaml", import.meta.url), "utf8")).checks as RuleCheck[];
@@ -19,7 +18,7 @@ const rule = lib.find((c) => c.id === "secret-in-tool-output")!;
 function run(toolOut: string, llmOut?: string) {
   const h = tmpHome();
   homes.push(h);
-  const st = trackedStore(path.join(h, "data"));
+  const st = new Store(path.join(h, "data"));
   try {
     const t = hex(16);
     const root = hex(8);
