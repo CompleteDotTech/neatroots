@@ -1,3 +1,5 @@
+import { createServer, type ServerResponse } from "node:http";
+import { Readable } from "node:stream";
 import { expect, test } from "@playwright/test";
 import { open, state } from "./util";
 
@@ -41,5 +43,56 @@ test("a real MCP proposal activates only after approval in the app", async ({ pa
     const pending = (await list()).pending_mcp_checks?.find((c: { id: string }) => c.id === id);
     if (pending) await page.request.post(`${state().url}/api/checks/${id}/reject`, { data: { revision: pending.revision } });
     await page.request.delete(`${state().url}/api/checks/${id}`);
+  }
+});
+
+test("mounted Checks recovers MCP proposals missed during an SSE disconnection", async ({ page }, testInfo) => {
+  const id = `reconnect-e2e-${testInfo.repeatEachIndex}-${Date.now()}`;
+  const list = async () => (await page.request.get(`${state().url}/api/checks`)).json();
+  const streams = new Set<ServerResponse>();
+  let disconnected = false;
+  // Forward the real event stream through a socket we can sever independently of HTTP/MCP.
+  const proxy = createServer(async (_request, response) => {
+    response.setHeader("Access-Control-Allow-Origin", "*");
+    if (disconnected) {
+      response.writeHead(503).end();
+      return;
+    }
+    const controller = new AbortController();
+    response.on("close", () => { streams.delete(response); controller.abort(); });
+    try {
+      const upstream = await fetch(`${state().url}/api/events`, { signal: controller.signal });
+      response.writeHead(upstream.status, { "Content-Type": "text/event-stream" });
+      streams.add(response);
+      Readable.fromWeb(upstream.body!).on("error", () => response.destroy()).pipe(response);
+    } catch {
+      response.destroy();
+    }
+  });
+  await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+  const address = proxy.address() as { port: number };
+  await page.route("**/api/events", (route) => route.continue({ url: `http://127.0.0.1:${address.port}/api/events` }));
+  try {
+    await open(page, "checks");
+    await expect(page.getByText("live", { exact: true })).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "Search checks" })).toBeVisible();
+    const proposal = page.getByTestId("mcp-check-proposal").filter({ hasText: id });
+    disconnected = true;
+    for (const stream of streams) stream.destroy();
+    await expect(page.getByText("reconnecting…", { exact: true })).toBeVisible();
+    await propose(`id: ${id}\nkind: rule\naction: flag\nrule: { type: count, at_least: 2 }\n`);
+    expect((await list()).pending_mcp_checks.some((c: { id: string }) => c.id === id)).toBe(true);
+    await expect(proposal).toHaveCount(0);
+    disconnected = false;
+    await expect(page.getByText("live", { exact: true })).toBeVisible();
+    await expect(proposal).toBeVisible();
+  } finally {
+    await page.close();
+    for (const stream of streams) stream.destroy();
+    await new Promise<void>((resolve) => proxy.close(() => resolve()));
+    const pending = (await list()).pending_mcp_checks?.find((c: { id: string }) => c.id === id);
+    if (pending) await fetch(`${state().url}/api/checks/${id}/reject`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ revision: pending.revision }),
+    });
   }
 });
