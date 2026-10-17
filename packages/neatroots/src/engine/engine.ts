@@ -1191,7 +1191,7 @@ ${library}`;
       const snap = loadTrace(this.roots.store, r.trace_id);
       if (isRule(check)) {
         const hit = evaluateRule(check, snap, true);
-        if (hit) {
+        if (hit && !hit.satisfied) {
           checked++;
           hits.push({ trace_id: r.trace_id, probability: null, evidence_span_ids: hit.evidenceSpanIds, root_name: r.root_name });
           results.push({ trace_id: r.trace_id, root_name: r.root_name, status: "hit" });
