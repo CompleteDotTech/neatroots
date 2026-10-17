@@ -28,6 +28,8 @@ export interface OfflineOptions {
   dirs?: string[];
   /** Only these rule ids. */
   only?: string[];
+  /** Evaluate only these parsed rules, without reading library, personal, project or database checks. */
+  explicitRules?: readonly RuleCheck[];
 }
 
 /** Runs every rule check over saved traces, with no server and no model. Question checks are skipped. */
@@ -36,11 +38,12 @@ export function checkFiles(files: string[], opts: OfflineOptions = {}): { runs: 
   const store = new Store(dir);
   try {
     if (opts.only && !opts.only.length) throw new Error("--only names no rule ids");
-    const registry = new CheckRegistry(store, path.join(rootsHome(), "checks"), () => opts.dirs ?? []);
-    const errors = registry.errors.map((e) => `${e.path}: ${e.message.split("\n")[0]}`);
-    const rules = registry
-      .rules()
-      .map((lc) => lc.check)
+    const registry = opts.explicitRules === undefined
+      ? new CheckRegistry(store, path.join(rootsHome(), "checks"), () => opts.dirs ?? [])
+      : undefined;
+    const errors = registry?.errors.map((e) => `${e.path}: ${e.message.split("\n")[0]}`) ?? [];
+    const rules = (opts.explicitRules ?? registry!.rules().map((lc) => lc.check))
+      .filter((c) => c.enabled !== false)
       .filter((c): c is RuleCheck => isRule(c) && (!opts.only || opts.only.includes(c.id)));
     const unknown = (opts.only ?? []).filter((id) => !rules.some((r) => r.id === id));
     if (unknown.length) throw new Error(`no rule check named ${unknown.join(", ")}`);

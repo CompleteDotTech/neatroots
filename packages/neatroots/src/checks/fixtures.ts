@@ -4,7 +4,7 @@ import YAML from "yaml";
 import { z } from "zod";
 import { checkFiles } from "./offline.js";
 import { parseChecks } from "./registry.js";
-import { isRule } from "./types.js";
+import { isRule, type RuleCheck } from "./types.js";
 
 const id = z.string().regex(/^[a-z0-9][a-z0-9_.-]*$/, "use lowercase letters, digits, dot, dash or underscore");
 const relativePath = z.string().min(1).refine(
@@ -97,7 +97,7 @@ function ensureInputs(manifestPath: string, manifest: z.infer<typeof Manifest>):
   return { checkDir, fixturePaths };
 }
 
-function validateRules(checkDir: string, ruleIds: string[]): void {
+function validateRules(checkDir: string, ruleIds: string[]): RuleCheck[] {
   const loaded = new Map<string, ReturnType<typeof parseChecks>["checks"][number]>();
   for (const file of fs.readdirSync(checkDir).filter((entry) => /\.ya?ml$/i.test(entry)).sort()) {
     const filePath = path.join(checkDir, file);
@@ -109,12 +109,13 @@ function validateRules(checkDir: string, ruleIds: string[]): void {
       loaded.set(check.id, check);
     }
   }
-  for (const ruleId of ruleIds) {
+  return ruleIds.map((ruleId) => {
     const check = loaded.get(ruleId);
     if (!check) throw new Error(`unknown rule id in rules: ${ruleId}`);
     if (!isRule(check)) throw new Error(`question check id is not a rule: ${ruleId}`);
     if (check.enabled === false) throw new Error(`disabled rule cannot be tested: ${ruleId}`);
-  }
+    return check;
+  });
 }
 
 function errorReport(manifest: string, message: string): FixtureSuiteReport {
@@ -127,21 +128,13 @@ export function testCheckFixtures(manifestFile: string): FixtureSuiteReport {
   try {
     const manifest = parseManifest(manifestPath);
     const { checkDir, fixturePaths } = ensureInputs(manifestPath, manifest);
-    validateRules(checkDir, manifest.rules);
+    const rules = validateRules(checkDir, manifest.rules);
     const fixtures: FixtureCaseResult[] = [];
     for (const fixture of manifest.fixtures) {
       const tracePath = fixturePaths.get(fixture.id)!;
       const result = checkFiles([tracePath], {
-        dirs: [checkDir],
-        only: manifest.rules,
+        explicitRules: rules,
       });
-      const checkPrefix = `${checkDir}${path.sep}`;
-      const checkErrors = result.errors.filter((error) => error.startsWith(checkPrefix));
-      if (checkErrors.length) throw new Error(checkErrors.join("; "));
-      // Registry diagnostics from unrelated ambient checks must not change this suite's result.
-      const availableRules = new Set(result.rules);
-      const unknown = manifest.rules.filter((ruleId) => !availableRules.has(ruleId));
-      if (unknown.length) throw new Error(`unknown or non-rule check id(s) in rules: ${unknown.join(", ")}`);
       if (!result.runs.length) throw new Error(`fixture ${fixture.id}: trace file imported no runs`);
 
       const matches = fixture.trace_id === undefined

@@ -4,8 +4,9 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { formatFixtureReport, testCheckFixtures } from "../src/checks/fixtures.js";
+import { checkFiles } from "../src/checks/offline.js";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "neatroots-check-fixtures-"));
 afterAll(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -88,6 +89,40 @@ function cli(manifest: string, options: { json?: boolean; home?: string } = {}) 
 }
 
 describe("check fixture suites", () => {
+  it("ignores a personal YAML-named directory while ordinary offline checks still load personal sources", () => {
+    const s = suite("ambient-directory");
+    const home = path.join(dir, "ambient-directory-home");
+    fs.mkdirSync(path.join(home, "checks", "draft.yaml"), { recursive: true });
+    vi.stubEnv("NEATROOTS_HOME", home);
+    try {
+      expect(testCheckFixtures(s.manifest)).toMatchObject({
+        exit_code: 0,
+        fixtures: [{ actual: ["detect-marker"] }],
+      });
+      expect(() => checkFiles([path.join(s.traces, "hit.json")], { dirs: [s.checks], only: ["detect-marker"] })).toThrow();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("does not read an unavailable shipped check library when running declared fixture rules", () => {
+    const s = suite("unreadable-library");
+    const library = fileURLToPath(new URL("../library", import.meta.url));
+    const read = fs.readFileSync.bind(fs);
+    const spy = vi.spyOn(fs, "readFileSync").mockImplementation((...args) => {
+      if (path.dirname(String(args[0])) === library) {
+        throw Object.assign(new Error("library access denied"), { code: "EACCES" });
+      }
+      return Reflect.apply(read, fs, args);
+    });
+    try {
+      expect(testCheckFixtures(s.manifest)).toMatchObject({ exit_code: 0, fixtures: [{ actual: ["detect-marker"] }] });
+      expect(() => checkFiles([path.join(s.traces, "hit.json")])).toThrow("library access denied");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("runs the self-contained example using paths relative to its manifest", () => {
     const manifest = fileURLToPath(new URL("../../../examples/check-fixtures/manifest.yaml", import.meta.url));
     const report = testCheckFixtures(manifest);
