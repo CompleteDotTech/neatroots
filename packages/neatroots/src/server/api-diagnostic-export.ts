@@ -1,5 +1,6 @@
 import type { Hono } from "hono";
 import type { Roots } from "../core.js";
+import { isQuestion, type Check } from "../checks/types.js";
 import type { ResourceSpansBatch } from "../otlp/types.js";
 import { compileRules, redactBatches, redactString, type RedactionHit, type RedactionRule } from "../relay/redact.js";
 import type { Finding } from "../types.js";
@@ -76,17 +77,29 @@ function otlpJson(batches: ResourceSpansBatch[]): { resourceSpans: unknown[] } {
   };
 }
 
+function exportCheck(check: Check): Record<string, unknown> {
+  if (!isQuestion(check)) return { ...check };
+  // Planner/draft titles may be prefixes of ask with a credential delimiter lost.
+  // Keep the full ask for redaction; do not infer a historical title from it.
+  const { title: _title, ...definition } = check;
+  return definition;
+}
+
 function exportFinding(roots: Roots, finding: Finding): Record<string, unknown> {
   const explanation = finding.explanation_id ? roots.store.getExplanation(finding.explanation_id) : undefined;
+  // Params, verification quotes and model-client error bodies can be clipped before storage. Their
+  // missing delimiters/prefixes make pattern redaction unsafe. Keep the remaining
+  // snapshot metadata; full evidence is available in the redacted trace instead.
+  const { params: _params, quote: _quote, error: _error, ...detail } = finding.detail;
   return {
     id: finding.id,
     check_id: finding.check_id,
     check_kind: finding.check_kind,
-    title: finding.title,
+    ...(finding.check_kind === "rule" ? { title: finding.title } : {}),
     probability: finding.probability,
     status: finding.status,
     evidence_span_ids: finding.evidence_span_ids,
-    detail: finding.detail,
+    detail,
     model: finding.model,
     triage_score: finding.triage_score,
     created_ms: finding.created_ms,
@@ -136,7 +149,7 @@ export function prepareDiagnosticExport(roots: Roots, traceId: string): Diagnost
       enabled_now: !!current && enabledIds.has(id),
       currently_applicable_rule: applicableRuleIds.has(id),
       source: current?.source ?? null,
-      definition: current?.check ?? null,
+      definition: current ? exportCheck(current.check) : null,
     };
   });
 
@@ -179,9 +192,10 @@ export function prepareDiagnosticExport(roots: Roots, traceId: string): Diagnost
         plan_available: !!plan,
         plan_id: plan?.id ?? null,
         recorded_check_ids: plan?.check_ids ?? [],
+        params: plan?.params ?? {},
         historical_definitions: "not-retained",
         note: plan
-          ? "The saved run plan records check IDs, not historical check definition bodies."
+          ? "The saved run plan records check IDs and per-run parameters, not historical check definition bodies."
           : "No saved run plan is available; finding snapshots still identify checks that raised findings.",
       },
       current_definitions: currentDefinitions,
@@ -198,7 +212,7 @@ export function prepareDiagnosticExport(roots: Roots, traceId: string): Diagnost
     redactions: {
       applied: true as const,
       rule_source: "cloud_forwarding" as const,
-      scope: "Existing built-in and configured custom cloud-forwarding patterns are applied to matching strings and non-structural keys. This cannot guarantee every sensitive value is detected.",
+      scope: "Existing built-in and configured custom cloud-forwarding patterns are applied to matching strings and non-structural keys. Stored run previews, question titles, finding parameters, verification quotes and finding error messages are omitted because already-clipped values cannot be reliably redacted. Full current questions and trace evidence are retained with redaction. This cannot guarantee every sensitive value is detected.",
       matches: [] as { kind: string; count: number }[],
     },
   };

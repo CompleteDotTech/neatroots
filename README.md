@@ -171,12 +171,15 @@ neatlogs.init(workflow_name="refund-agent", flush_interval=0.5, instrumentations
 - **Diagnostic export.** From a run, choose **More actions → Prepare diagnostic export** to preview
   and download a versioned JSON bundle with its trace, findings and relevant checks. It uses the
   same built-in and configured custom redaction patterns as cloud forwarding. It exports recorded
-  trace, finding and check data as stored, except where those existing patterns match; it does not
-  gather extra environment or machine state. Nothing is uploaded automatically, and pattern matches
-  cannot guarantee every sensitive value is removed. Currently enabled rules that apply to the run
+  trace, finding and check data as stored, except where those existing patterns match. Already-clipped
+  run previews, question titles, finding parameters, verification quotes and finding error messages
+  are omitted. Full current questions and trace evidence remain with redaction; check IDs and other
+  metadata are retained. It does not gather extra environment or machine state. Nothing is uploaded
+  automatically, and pattern matches cannot guarantee every sensitive value is removed. Currently
+  enabled rules that apply to the run
   are included even when they raised no finding, and are marked as current. The bundle keeps saved
-  plan IDs separate from current check definitions because historical definition bodies are not
-  retained.
+  plan IDs and redacted per-run plan parameters separate from current check definitions because
+  historical definition bodies are not retained.
 - **Search** (⌘K) finds text in any span. Filters: `project:` `status:` `kind:` `tool:` `model:`
   `check:` `session:` `has:problems` `since:7d`.
 - **Checks** lists the rules and questions in force. **New check** turns a sentence into a check and
