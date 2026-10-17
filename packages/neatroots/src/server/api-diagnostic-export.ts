@@ -1,7 +1,8 @@
 import type { Hono } from "hono";
 import { randomBytes } from "node:crypto";
 import type { Roots } from "../core.js";
-import { isQuestion, type Check } from "../checks/types.js";
+import { exportDefinition, exportDetail } from "./diagnostic-export-provenance.js";
+import { dataMap, fixedString, structuralKey } from "./diagnostic-export-schema.js";
 import type { ResourceSpansBatch } from "../otlp/types.js";
 import { compileRules, redactBatches, redactString, type RedactionRule } from "../relay/redact.js";
 import type { Finding } from "../types.js";
@@ -12,25 +13,6 @@ import { checkDiagnosticSource, DIAGNOSTIC_JSON_LIMIT, DiagnosticExportTooLarge,
 const FORMAT = "neatroots.diagnostic-export";
 const SCHEMA_VERSION = 1;
 
-// These names describe the bundle and OTLP wire shape. Data map keys are still redacted.
-const STRUCTURAL_KEYS = new Set([
-  "format", "schema_version", "exported_at", "version", "neatroots", "run", "trace", "findings", "checks", "redactions", "applied",
-  "rule_source", "scope", "matches", "kind", "count", "trace_id", "session_id", "project", "workflow",
-  "root_span_id", "root_name", "status", "started_ms", "ended_ms", "span_count", "llm_calls", "tool_calls", "error_count",
-  "prompt_tokens", "completion_tokens", "total_tokens", "input_preview", "output_preview", "interrupted", "termination_reason",
-  "id", "check_id", "check_kind", "title", "probability", "evidence_span_ids", "detail", "model", "triage_score", "created_ms",
-  "updated_ms", "explanation", "explanation_id", "cause", "fix", "grounding", "plan", "plan_available", "plan_id", "available",
-  "recorded_check_ids", "historical_definitions", "definition_available", "note", "current_definitions", "source", "definition", "enabled_now", "currently_applicable_rule",
-  "decisions", "span_id", "answer", "backend", "latency_ms", "resourceSpans", "resource", "scopeSpans", "spans", "attributes",
-  "key", "value", "stringValue", "boolValue", "intValue", "doubleValue", "bytesValue", "arrayValue", "values", "kvlistValue",
-  "droppedAttributesCount", "schemaUrl", "name", "scope", "traceId", "spanId", "parentSpanId", "traceState", "flags",
-  "startTimeUnixNano", "endTimeUnixNano", "events", "droppedEventsCount", "links", "droppedLinksCount", "timeUnixNano", "code",
-  "message", "description", "enabled", "baseline", "applies_to", "guidance", "tags", "group", "ask", "when", "params", "options",
-  "flag_on", "flag_at", "levels", "flag_at_level", "rule", "type", "same", "at_least", "consecutive", "at_least_ms", "metric",
-  "requires", "min_calls", "rising", "factor", "min_tokens", "max_period", "min_cycles", "goal", "final_output", "last", "fields",
-  "tool", "start", "end", "duration_ms", "error", "input", "output", "tokens", "rootInput", "system", "user", "content", "role",
-  "arguments", "state", "choice", "confidence", "score",
-]);
 export interface DiagnosticExportBundle {
   format: typeof FORMAT;
   schema_version: typeof SCHEMA_VERSION;
@@ -50,18 +32,17 @@ export interface DiagnosticExportResponse {
 
 function redactTree(value: unknown, rules: RedactionRule[], path: string, budget: DiagnosticRedactionBudget, safeAliases: Set<string>, depth = 0): unknown {
   budget.node(depth);
-  if (typeof value === "string") return safeAliases.has(value) ? value : redactString(value, rules, "", [], budget);
+  if (typeof value === "string") return (safeAliases.has(value) || fixedString(path, value)) ? value : redactString(value, rules, "", [], budget);
   if (Array.isArray(value)) return value.map((item, index) => redactTree(item, rules, `${path}[${index}]`, budget, safeAliases, depth + 1));
   if (!value || typeof value !== "object") return value;
 
   const output: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
-  let keyIndex = 0;
   for (const [key, item] of Object.entries(value)) {
-    const proposed = safeAliases.has(key) || STRUCTURAL_KEYS.has(key) ? key : redactString(key, rules, "", [], budget);
+    const proposed = safeAliases.has(key) || structuralKey(path, key) ? key : redactString(key, rules, "", [], budget);
     let safeKey = proposed;
     let collision = 1;
     while (Object.hasOwn(output, safeKey)) safeKey = `${proposed} [${++collision}]`;
-    output[safeKey] = redactTree(item, rules, `${path}[${keyIndex++}]`, budget, safeAliases, depth + 1);
+    output[safeKey] = redactTree(item, rules, `${path}.${dataMap(path) ? "*" : key}`, budget, safeAliases, depth + 1);
   }
   return output;
 }
@@ -92,25 +73,14 @@ export function createCheckAliases(ids: readonly string[], prefix: string): Map<
   return aliases;
 }
 
-function exportCheck(check: Check, alias: string): Record<string, unknown> {
-  if (!isQuestion(check)) return { ...check, id: alias, ...(check.title === check.id ? { title: alias } : {}) };
-  // Planner/draft titles may be prefixes of ask with a credential delimiter lost.
-  // Keep the full ask for redaction; do not infer a historical title from it.
-  const { title: _title, ...definition } = check;
-  return { ...definition, id: alias };
-}
-
 function exportFinding(roots: Roots, finding: Finding, alias: string): Record<string, unknown> {
   const explanation = finding.explanation_id ? roots.store.getExplanation(finding.explanation_id) : undefined;
-  // Params, verification quotes and model-client error bodies can be clipped before storage. Their
-  // missing delimiters/prefixes make pattern redaction unsafe. Keep the remaining
-  // snapshot metadata; full evidence is available in the redacted trace instead.
-  const { params: _params, quote: _quote, error: _error, ...detail } = finding.detail;
+  const detail = exportDetail(finding.detail);
   return {
     id: finding.id,
     check_id: alias,
     check_kind: finding.check_kind,
-    ...(finding.check_kind === "rule" ? { title: finding.title === finding.check_id ? alias : finding.title } : {}),
+    ...(finding.title === finding.check_id ? { title: alias } : {}),
     probability: finding.probability,
     status: finding.status,
     evidence_span_ids: finding.evidence_span_ids,
@@ -169,7 +139,7 @@ export function prepareDiagnosticExport(roots: Roots, traceId: string): Diagnost
       enabled_now: !!current && enabledIds.has(id),
       currently_applicable_rule: applicableRuleIds.has(id),
       source: current?.source ?? null,
-      definition: current ? exportCheck(current.check, aliases.get(id)!) : null,
+      ...exportDefinition(current, aliases.get(id)!),
     };
   });
 
@@ -212,10 +182,11 @@ export function prepareDiagnosticExport(roots: Roots, traceId: string): Diagnost
         plan_available: !!plan,
         plan_id: plan?.id ?? null,
         recorded_check_ids: (plan?.check_ids ?? []).map((id) => aliases.get(id)!),
-        params: Object.fromEntries(Object.entries(plan?.params ?? {}).map(([id, params]) => [aliases.get(id)!, params])),
+        params: Object.fromEntries(Object.entries(plan?.params ?? {}).map(([id, params]) => [aliases.get(id)!, plan?.created_by === "user" ? params : null])),
+        params_provenance: plan?.created_by ?? "unavailable",
         historical_definitions: "not-retained",
         note: plan
-          ? "The saved run plan records check aliases and per-run parameters, not historical check definition bodies."
+          ? "The saved run plan records check aliases. Parameter values are included only for explicitly user-created plans; other parameter keys retain null values. Historical check bodies are not retained."
           : "No saved run plan is available; finding snapshots still identify checks that raised findings.",
       },
       current_definitions: currentDefinitions,
@@ -223,7 +194,8 @@ export function prepareDiagnosticExport(roots: Roots, traceId: string): Diagnost
         check_id: aliases.get(decision.check_id)!,
         span_id: decision.span_id,
         probability: decision.probability,
-        answer: decision.answer,
+        answer: null, // Stored model labels/distribution keys may echo clipped/generated check text.
+        answer_omitted: true,
         backend: decision.backend,
         latency_ms: decision.latency_ms,
         created_ms: decision.created_ms,
@@ -232,7 +204,7 @@ export function prepareDiagnosticExport(roots: Roots, traceId: string): Diagnost
     redactions: {
       applied: true as const,
       rule_source: "cloud_forwarding" as const,
-      scope: "Check IDs use consistent opaque aliases within this bundle. Existing built-in and configured custom cloud-forwarding patterns apply to other matching strings and non-structural keys. Stored run previews, question titles, finding parameters, verification quotes and finding error messages are omitted because already-clipped values cannot be reliably redacted. Investigation cause/fix prose is omitted because it may echo that clipped evidence. Explanation evidence IDs, grounding, model and timestamp remain. Full current questions and trace evidence are retained with redaction. This cannot guarantee every sensitive value is detected.",
+      scope: "Check IDs use consistent opaque aliases within this bundle. Existing built-in and configured custom cloud-forwarding patterns apply to other matching strings and non-structural keys. Stored run previews, question titles, finding parameters, verification quotes and finding error messages are omitted because already-clipped values cannot be reliably redacted. Investigation cause/fix prose is omitted because it may echo that clipped evidence. Explanation evidence IDs, grounding, model and timestamp remain. Only library definition bodies and explicitly user-created plan parameter values are retained with redaction. Non-library bodies, finding prose/detail outside safe metadata, and decision answers are omitted because durable human authorship is unavailable. Full trace evidence remains with redaction. This cannot guarantee every sensitive value is detected.",
       matches: [] as { kind: string; count: number }[],
     },
   };

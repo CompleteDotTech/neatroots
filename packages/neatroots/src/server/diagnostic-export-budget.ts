@@ -68,17 +68,15 @@ export function checkDiagnosticSource(roots: Roots, traceId: string): number {
   const db = roots.store.db;
   let bytes = 0;
   const add = (n: number) => { bytes += n; if (bytes > DIAGNOSTIC_SOURCE_LIMIT) throw new DiagnosticExportTooLarge(); };
-  const total = (sql: string) => add((db.prepare(sql).get(traceId) as { bytes: number }).bytes);
-  total(`SELECT COALESCE(SUM(2048 + ${["name", "status_message", "attributes", "events", "links", "extra"].map((k) => `COALESCE(length(CAST(${k} AS BLOB)),0)`).join(" + ")}),0) bytes FROM spans WHERE trace_id=?`);
+  const total = (sql: string, bindings = 1) => add((db.prepare(sql).get(...Array(bindings).fill(traceId)) as { bytes: number }).bytes);
+  // Every column selected by later SELECT * contributes, including noncanonical IDs/raw
+  // timestamps and derived/omitted columns. Schema enumeration avoids silently missing a scalar.
+  const columns = (table: string) => [...db.prepare(`PRAGMA table_info(${table})`).iterate() as Iterable<{ name: string }>].map(({ name }) => `COALESCE(length(CAST("${name}" AS BLOB)),0)`).join(" + ");
+  for (const table of ["spans", "runs", "findings", "decisions"]) total(`SELECT COALESCE(SUM(${table === "spans" ? 2048 : 512} + ${columns(table)}),0) bytes FROM ${table} WHERE trace_id=?`);
+  total(`SELECT COALESCE(SUM(${columns("explanations")}+512),0) bytes FROM explanations WHERE trace_id=? OR id IN (SELECT explanation_id FROM findings WHERE trace_id=?)`, 2);
+  total(`SELECT COALESCE(SUM(${columns("plans")}+512),0) bytes FROM plans WHERE id=(SELECT plan_id FROM runs WHERE trace_id=?)`);
   total(`SELECT COALESCE(SUM(length(CAST(r.json AS BLOB))+length(CAST(c.json AS BLOB))+1024),0) bytes
     FROM (SELECT DISTINCT resource_id,scope_id FROM spans WHERE trace_id=?) s JOIN resources r ON r.id=s.resource_id JOIN scopes c ON c.id=s.scope_id`);
-  for (const [table, fields] of [
-    ["runs", ["project", "workflow", "root_name", "termination_reason", "session_id"]],
-    ["findings", ["check_id", "title", "evidence_span_ids", "detail", "model"]],
-    ["decisions", ["check_id", "answer", "backend"]],
-    ["explanations", ["cause", "fix", "evidence_span_ids", "model"]],
-  ] as const) total(`SELECT COALESCE(SUM(512 + ${fields.map((k) => `COALESCE(length(CAST(${k} AS BLOB)),0)`).join(" + ")}),0) bytes FROM ${table} WHERE trace_id=?`);
-  total(`SELECT COALESCE(SUM(length(CAST(body AS BLOB))+length(CAST(check_ids AS BLOB))+512),0) bytes FROM plans WHERE id=(SELECT plan_id FROM runs WHERE trace_id=?)`);
   const sizes = new Map<string, number>();
   for (const field of ["attributes", "events"]) {
     const refs = db.prepare(`SELECT json_extract(j.value,'$.sha') sha, json_extract(j.value,'$.len') len

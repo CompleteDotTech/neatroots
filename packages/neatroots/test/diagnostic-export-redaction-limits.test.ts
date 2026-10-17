@@ -15,7 +15,10 @@ describe("diagnostic redaction work limits", () => {
         const traceId = hex(16);
         const value = "x".repeat(11_000);
         tb.roots.ingest([batch([span({ traceId, name: "workflow", kind: "workflow", attrs: location === "trace" ? [s("input", value)] : [] })])]);
-        if (location === "metadata") tb.roots.checks.save({ id: "bounded-rule", kind: "rule", title: value, rule: { type: "count", at_least: 99 } }, "db", "planner");
+        if (location === "metadata") {
+          const plan = tb.roots.store.insertPlan({ workflow: "test-agent", created_by: "user", model: null, rationale: null, check_ids: ["bounded"], params: { bounded: { instruction: value } }, tools: [] });
+          tb.roots.store.setRunPlan(traceId, plan.id);
+        }
         expect(checkDiagnosticSource(tb.roots, traceId)).toBeLessThan(DIAGNOSTIC_SOURCE_LIMIT);
         const before = structuredClone(tb.roots.store.batchesForTraces([traceId]));
         let matches = 0;
@@ -31,7 +34,7 @@ describe("diagnostic redaction work limits", () => {
         expect(matches).toBeLessThanOrEqual(10_001);
         expect(matches).toBeGreaterThan(0);
         expect(tb.roots.store.batchesForTraces([traceId])).toEqual(before);
-        if (location === "metadata") expect(tb.roots.checks.get("bounded-rule")!.check).toMatchObject({ title: value });
+        if (location === "metadata") expect(tb.roots.store.getPlan(tb.roots.store.getRun(traceId)!.plan_id!)!.params).toEqual({ bounded: { instruction: value } });
       });
     }
   }
@@ -40,7 +43,7 @@ describe("diagnostic redaction work limits", () => {
     const tb = await makeRoots({ serve: true, noEngine: true, config: (cfg) => { cfg.cloud.redactPatterns = ["a*"]; } });
     cleanup.push(tb.close);
     const traceId = hex(16);
-    tb.roots.ingest([batch([span({ traceId, name: "workflow", kind: "workflow", attrs: [s("input", "x".repeat(300))] })])]);
+    tb.roots.ingest([batch([span({ traceId, name: "workflow", kind: "workflow", attrs: [s("input", "x".repeat(1000))] })])]);
     const redactBatches = redaction.redactBatches;
     let traceFinished = false;
     vi.spyOn(redaction, "redactBatches").mockImplementation((...args) => { const result = redactBatches(...args); traceFinished = true; return result; });
@@ -84,7 +87,7 @@ describe("diagnostic redaction work limits", () => {
     expect(() => nodes.node(0)).toThrow(DiagnosticExportTooLarge);
   });
 
-  it("refuses deeply nested metadata before recursive tree copies grow", async () => {
+  it("omits deeply nested generated answers before recursive tree copies grow", async () => {
     const tb = await makeRoots({ serve: true, noEngine: true });
     cleanup.push(tb.close);
     const traceId = hex(16);
@@ -93,7 +96,9 @@ describe("diagnostic redaction work limits", () => {
     for (let i = 0; i < 80; i++) answer = [answer];
     tb.roots.store.insertDecision({ trace_id: traceId, check_id: "nested", span_id: null, probability: 0.1, answer: { nested: answer }, backend: "mock", latency_ms: 1 });
     const response = await fetch(`${tb.url}/api/runs/${traceId}/diagnostic-export`);
-    expect(response.status).toBe(413);
+    expect(response.status).toBe(200);
+    expect((await response.json()).bundle.checks.decisions[0]).toMatchObject({ answer: null, answer_omitted: true });
+    expect(tb.roots.store.decisionsForTrace(traceId)[0].answer).toEqual({ nested: answer });
   });
 
 });

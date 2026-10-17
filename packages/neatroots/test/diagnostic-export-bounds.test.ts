@@ -58,7 +58,7 @@ describe("bounded diagnostic export", () => {
       expect(prepared.bundle.checks.historical.recorded_check_ids[0]).toBe(alias);
       expect(prepared.bundle.checks.historical.params[alias]).toEqual({ instruction: "Keep private" });
       const definitions = prepared.bundle.checks.current_definitions;
-      expect(definitions.find((d: { check_id: string }) => d.check_id === alias).definition.id).toBe(alias);
+      expect(definitions.find((d: { check_id: string }) => d.check_id === alias)).toMatchObject({ definition: null, definition_omitted: "unverified-provenance", check_kind: "yes_no" });
       const absent = prepared.bundle.checks.historical.recorded_check_ids[1];
       expect(absent).not.toBe(alias);
       expect(prepared.bundle.checks.historical.params[absent]).toEqual({ instruction: "Saved only" });
@@ -124,7 +124,7 @@ describe("bounded diagnostic export", () => {
     });
   }
 
-  it("keeps span selectors and source metadata literal while aliasing check identity", async () => {
+  it("preserves stored selectors and source metadata while omitting bodies without authorship provenance", async () => {
     const tb = await makeRoots({ serve: true, noEngine: true }); cleanup.push(tb.close);
     const traceId = hex(16);
     tb.roots.ingest([batch([span({ traceId, name: "schema semantics", kind: "workflow" })])]);
@@ -135,9 +135,8 @@ describe("bounded diagnostic export", () => {
     const response = await fetch(`${tb.url}/api/runs/${traceId}/diagnostic-export`);
     const prepared = await response.json();
     const current = prepared.bundle.checks.current_definitions.find((d: { source: string }) => d.source === "user");
-    expect(current.definition.id).toBe(current.check_id);
-    expect(current.definition.title).toBe(current.check_id);
-    expect(current.definition.rule).toEqual(check.rule);
+    expect(current).toMatchObject({ definition: null, definition_omitted: "unverified-provenance", check_kind: "rule", rule_summary: { type: "requires_before" } });
+    expect(tb.roots.checks.get(check.id)!.check).toMatchObject({ rule: check.rule });
     expect(prepared.bundle.format).toBe("neatroots.diagnostic-export");
     expect(current.source).toBe("user");
     expect(prepared.bundle.findings[0].status).toBe("raised");

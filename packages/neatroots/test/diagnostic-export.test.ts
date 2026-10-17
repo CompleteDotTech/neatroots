@@ -137,7 +137,7 @@ describe("local diagnostic export", () => {
     expect(bundle.checks.historical).toMatchObject({ historical_definitions: "not-retained" });
     expect(bundle.checks.current_definitions).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ check_id: alias, available: true, definition: expect.any(Object) }),
+        expect.objectContaining({ check_id: alias, available: true, definition: null, definition_omitted: "unverified-provenance" }),
         expect.objectContaining({ check_id: recorded[1], available: false, definition: null }),
       ]),
     );
@@ -150,8 +150,9 @@ describe("local diagnostic export", () => {
     expect(json).toContain("tool.path");
     expect(json).toContain("tool.settings");
     expect(json).toContain("timeout=30s");
-    expect(json).toContain("machine_path");
-    expect(json).toContain("environment_variables");
+    expect(bundle.findings[0].detail).toEqual({});
+    expect(json).not.toContain("machine_path");
+    expect(json).not.toContain("environment_variables");
     expect(bundle.redactions.matches).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "email" }), expect.objectContaining({ kind: "api_key" }), expect.objectContaining({ kind: "custom" })]));
     expect(JSON.stringify(tb.roots.store.batchesForTraces([traceId]))).toBe(before);
     expect(receiver.requests()).toBe(0);
@@ -207,7 +208,7 @@ describe("local diagnostic export", () => {
         checks: {
           historical: { plan_available: boolean; recorded_check_ids: string[]; historical_definitions: string };
           decisions: unknown[];
-          current_definitions: { check_id: string; enabled_now: boolean; currently_applicable_rule: boolean; definition: Record<string, unknown> }[];
+          current_definitions: { check_id: string; enabled_now: boolean; currently_applicable_rule: boolean; definition: Record<string, unknown> | null; rule_summary?: unknown }[];
         };
       };
       preview: { span_count: number; finding_count: number; check_count: number };
@@ -216,10 +217,13 @@ describe("local diagnostic export", () => {
     expect(bundle.findings).toEqual([]);
     expect(bundle.checks.decisions).toEqual([]);
     expect(bundle.checks.historical).toMatchObject({ plan_available: false, recorded_check_ids: [], historical_definitions: "not-retained" });
-    const expectedDefinitions = [...expectedExistingRules, { ...applicable, id: expect.any(String) }];
-    // Compare complete rule shapes and exact membership; opaque IDs alone cannot identify rules.
-    expect(bundle.checks.current_definitions).toHaveLength(expectedDefinitions.length);
-    expect(bundle.checks.current_definitions.map((d) => d.definition)).toEqual(expect.arrayContaining(expectedDefinitions));
+    // Exact curated bodies plus one metadata-only rule. Numeric rule shape proves neither
+    // other-project(100) nor disabled(101) can substitute for the applicable count(99) rule.
+    expect(bundle.checks.current_definitions).toHaveLength(expectedExistingRules.length + 1);
+    expect(bundle.checks.current_definitions.filter((d) => d.definition).map((d) => d.definition)).toEqual(expect.arrayContaining(expectedExistingRules));
+    expect(bundle.checks.current_definitions.filter((d) => !d.definition)).toEqual([
+      expect.objectContaining({ definition: null, definition_omitted: "unverified-provenance", rule_summary: { type: "count", at_least: 99 } }),
+    ]);
     expect(bundle.checks.current_definitions.every((d) => d.enabled_now && d.currently_applicable_rule)).toBe(true);
     expect(preview).toEqual({ span_count: 1, finding_count: 0, check_count: expectedExistingRules.length + 1 });
   });

@@ -66,10 +66,10 @@ describe("diagnostic export privacy", () => {
         expect(response.status).toBe(200);
         const prepared = await response.json();
         const current = prepared.bundle.checks.current_definitions.find((c: { check_id: string }) => c.check_id === prepared.bundle.findings[0].check_id);
-        expect(current.definition.ask).toBe(`Did the agent reveal [redacted:${secret.marker}]?`);
+        expect(current).toMatchObject({ definition: null, definition_omitted: "unverified-provenance", check_kind: "yes_no" });
         expect(JSON.stringify(prepared.bundle.trace)).toContain(`[redacted:${secret.marker}]`);
         expect(JSON.stringify(prepared)).not.toContain(fragment);
-        expect(current.definition).not.toHaveProperty("title");
+        expect(current.definition).toBeNull();
         expect(prepared.bundle.findings[0]).toMatchObject({ check_id: current.check_id, status: "raised", detail: { backend: "mock" } });
         expect(prepared.bundle.findings[0]).not.toHaveProperty("title");
         expect(tb.roots.checks.get(check.id)).toEqual(before.check);
@@ -78,7 +78,8 @@ describe("diagnostic export privacy", () => {
 
         tb.roots.checks.save({ ...check, ask: "Did the current question change?", title: "Current title" }, "user", "user");
         const changed = await (await fetch(`${tb.url}/api/runs/${traceId}/diagnostic-export`)).json();
-        expect(changed.bundle.checks.current_definitions.find((c: { check_id: string }) => c.check_id === changed.bundle.findings[0].check_id).definition.ask).toBe("Did the current question change?");
+        expect(changed.bundle.checks.current_definitions.find((c: { check_id: string }) => c.check_id === changed.bundle.findings[0].check_id)).toMatchObject({ definition: null, definition_omitted: "unverified-provenance" });
+        expect(tb.roots.checks.get(check.id)!.check).toMatchObject({ ask: "Did the current question change?" });
         expect(changed.bundle.findings[0]).not.toHaveProperty("ask");
         expect(JSON.stringify(changed)).not.toContain(fragment);
         expect(tb.roots.store.getFinding(finding.id)).toEqual(finding);
@@ -140,7 +141,7 @@ describe("diagnostic export privacy", () => {
       const prepared = await response.json();
       const exportedFinding = prepared.bundle.findings[0];
       const current = prepared.bundle.checks.current_definitions.find((c: { check_id: string }) => c.check_id === exportedFinding.check_id);
-      expect(current.definition.ask).toBe(`Did the agent reveal [redacted:${secret.marker}]?`);
+      expect(current).toMatchObject({ definition: null, definition_omitted: "unverified-provenance", check_kind: "yes_no" });
       expect(JSON.stringify(prepared.bundle.trace)).toContain(`[redacted:${secret.marker}]`);
       expect(JSON.stringify(prepared)).not.toContain(secret.fragment.slice(0, 16));
       expect(exportedFinding.explanation).toEqual({ evidence_span_ids: [root], grounding: 0.875, model: "mock-investigator", created_ms: explanation.created_ms });
@@ -212,7 +213,7 @@ describe("diagnostic export privacy", () => {
         tb.roots.store.insertFinding({
           trace_id: traceId, check_id: check.id, check_kind: "rule", title: "Repeated tool failure",
           probability: 1, status: "raised", evidence_span_ids: hit.evidenceSpanIds,
-          detail: { params: hit.params, source: "db", group: "reliability" },
+          detail: { params: hit.params, source: "planner", group: "reliability" },
           model: null, triage_score: null, explanation_id: null,
         });
         const before = {
@@ -225,7 +226,8 @@ describe("diagnostic export privacy", () => {
         // Preview and download both use this bundle; scan the entire response for fragments.
         expect(JSON.stringify(prepared)).not.toContain(secret.fragment);
         expect(JSON.stringify(prepared.bundle.trace)).toContain(`[redacted:${secret.marker}]`);
-        expect(prepared.bundle.findings[0].detail).toEqual({ source: "db", group: "reliability" });
+        expect(prepared.bundle.findings[0].detail).toEqual({ source: "planner" });
+        expect(prepared.bundle.findings[0].detail).not.toHaveProperty("group");
         expect(prepared.bundle.checks.historical.params).toEqual({});
         expect(tb.roots.store.batchesForTraces([traceId])).toEqual(before.batches);
         expect(tb.roots.store.findingsForTrace(traceId)).toEqual(before.findings);
@@ -251,7 +253,7 @@ describe("diagnostic export privacy", () => {
     const prepared = await response.json();
     expect(JSON.stringify(prepared)).not.toContain(secrets[0].fragment);
     expect(JSON.stringify(prepared)).not.toContain(secrets[1].fragment);
-    expect(prepared.bundle.findings[0].detail).toEqual({ backend: "mock", choice: "yes" });
+    expect(prepared.bundle.findings[0].detail).toEqual({ backend: "mock" });
   });
 
   it("exports redacted saved parameters for a clean decision independently of current definitions", async () => {
@@ -278,7 +280,7 @@ describe("diagnostic export privacy", () => {
     const alias = prepared.bundle.checks.decisions[0].check_id;
     const removedAlias = prepared.bundle.checks.historical.recorded_check_ids[1];
     expect(alias).toMatch(/^check-[a-f0-9]{16}-\d+$/);
-    expect(prepared.bundle.checks.decisions).toEqual([expect.objectContaining({ check_id: alias, answer: decision.answer })]);
+    expect(prepared.bundle.checks.decisions).toEqual([expect.objectContaining({ check_id: alias, answer: null, answer_omitted: true })]);
     expect(prepared.bundle.checks.historical).toMatchObject({
       plan_available: true, recorded_check_ids: [alias, removedAlias], historical_definitions: "not-retained",
       params: {
@@ -286,7 +288,7 @@ describe("diagnostic export privacy", () => {
         [removedAlias]: params["removed.question"],
       },
     });
-    expect(prepared.bundle.checks.current_definitions).toContainEqual(expect.objectContaining({ check_id: alias, definition: expect.objectContaining({ params: { instruction: "Current, changed instruction" } }) }));
+    expect(prepared.bundle.checks.current_definitions).toContainEqual(expect.objectContaining({ check_id: alias, definition: null, definition_omitted: "unverified-provenance" }));
     for (const secret of secrets) expect(JSON.stringify(prepared)).not.toContain(secret.fragment);
     expect(tb.roots.store.getPlan(plan.id)).toEqual(storedPlan);
     expect(tb.roots.store.decisionsForTrace(traceId)).toEqual([decision]);
