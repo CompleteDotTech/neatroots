@@ -1,4 +1,7 @@
 import fs from "node:fs";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
+import { Worker } from "node:worker_threads";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Store } from "../src/store/db.js";
@@ -17,6 +20,115 @@ afterEach(() => {
 });
 
 describe("FTS row identity", () => {
+  it("serializes concurrent Store constructors and migrates legacy search rows only once", async () => {
+    const st = store();
+    const original = toolSpan(hex(16), "", "lookup", "{}", "payloadneedle");
+    const marker = markerSpan(original.traceId, "");
+    st.ingest([batch([original, marker])]);
+    st.db.exec("UPDATE span_fts SET rowid = rowid + 1000, body = 'legacyneedle'");
+    st.db.prepare("INSERT INTO span_fts(trace_id, span_id, name, tool_name, body) VALUES (?, ?, '', '', 'latestneedle')").run(original.traceId, original.spanId);
+    st.db.prepare("INSERT INTO span_fts(trace_id, span_id, name, tool_name, body) VALUES (?, ?, '', '', 'markerneedle')").run(original.traceId, marker.spanId);
+    st.db.exec("INSERT INTO span_fts(trace_id, span_id, name, tool_name, body) VALUES ('orphan', 'orphan', '', '', 'orphanneedle'); DELETE FROM meta WHERE key = 'search_rowids'");
+    st.close();
+
+    const require = createRequire(import.meta.url);
+    const gates = new Int32Array(new SharedArrayBuffer(8));
+    const release = (slot: number) => { Atomics.store(gates, slot, 1); Atomics.notify(gates, slot); };
+    const probe = new Database(st.file);
+    probe.pragma("busy_timeout = 0");
+    const workers: Worker[] = [];
+    let guards = 0;
+    let materialized = 0;
+    let reserved = false;
+    try {
+      const opened = await Promise.all([0, 1].map(() => new Promise<{ error?: string; migrations: number }>((resolve, reject) => {
+        // Each thread opens a real connection. Only the first metadata read and the boundary
+        // between materialization and DELETE are paused; SQLite chooses the actual lock order.
+        const worker = new Worker(`
+          const { workerData, parentPort } = require('node:worker_threads');
+          require(workerData.tsx);
+          const Database = require(workerData.sqlite);
+          const { Store } = require(workerData.store);
+          const gates = new Int32Array(workerData.gates);
+          const pause = slot => {
+            if (Atomics.wait(gates, slot, 0, 10000) === 'timed-out') throw new Error('migration barrier timed out');
+          };
+          const prepare = Database.prototype.prepare;
+          const exec = Database.prototype.exec;
+          let guarded = false, migrations = 0;
+          Database.prototype.prepare = function(sql) {
+            const stmt = prepare.call(this, sql);
+            if (sql === 'SELECT value FROM meta WHERE key = ?') {
+              const get = stmt.get;
+              stmt.get = function(key) {
+                const row = get.call(this, key);
+                if (key === 'search_rowids' && !guarded) {
+                  guarded = true;
+                  if (row) throw new Error('fixture already migrated');
+                  parentPort.postMessage({ kind: 'guard' });
+                  pause(0);
+                }
+                return row;
+              };
+            }
+            return stmt;
+          };
+          Database.prototype.exec = function(sql) {
+            if (!sql.includes('CREATE TEMP TABLE search_rows')) return exec.call(this, sql);
+            migrations++;
+            const cut = sql.indexOf('DELETE FROM span_fts');
+            exec.call(this, sql.slice(0, cut));
+            parentPort.postMessage({ kind: 'materialized' });
+            pause(1);
+            return exec.call(this, sql.slice(cut));
+          };
+          try { const st = new Store(workerData.home); st.close(); parentPort.postMessage({ kind: 'done', migrations }); }
+          catch (error) { parentPort.postMessage({ kind: 'done', migrations, error: error.code || error.message }); }
+        `, { eval: true, workerData: { home: st.dir, gates: gates.buffer, tsx: require.resolve("tsx/cjs"), sqlite: require.resolve("better-sqlite3"), store: fileURLToPath(new URL("../src/store/db.ts", import.meta.url)) } });
+        workers.push(worker);
+        let result: { error?: string; migrations: number } | undefined;
+        worker.on("message", (message) => {
+          if (message.kind === "guard" && ++guards === 2) release(0);
+          if (message.kind === "materialized") {
+            materialized++;
+            if (materialized === 1) {
+              // Observe the real SQLite reservation, independently of transaction API choices.
+              // Deferred readers must both materialize before either attempts the write upgrade.
+              try { probe.exec("BEGIN IMMEDIATE; ROLLBACK"); }
+              catch (error) {
+                if ((error as { code?: string }).code !== "SQLITE_BUSY") { reject(error); return; }
+                reserved = true;
+              }
+            }
+            if (reserved || materialized === 2) release(1);
+          }
+          if (message.kind === "done") result = message;
+        });
+        worker.on("error", reject);
+        worker.on("exit", (code) => result && code === 0 ? resolve(result) : reject(new Error(`migration worker exit ${code}`)));
+      })));
+      expect(opened.map((r) => r.error).filter(Boolean)).toEqual([]);
+      expect(guards).toBe(2);
+      expect(reserved).toBe(true);
+      expect(opened.reduce((n, r) => n + r.migrations, 0)).toBe(1);
+    } finally {
+      release(0); release(1);
+      await Promise.all(workers.map((w) => w.terminate()));
+      probe.close();
+    }
+    const exec = vi.spyOn(Database.prototype, "exec");
+    const reopened = trackedStore(st.dir);
+    expect(exec.mock.calls.some(([sql]) => sql.includes("CREATE TEMP TABLE search_rows"))).toBe(false);
+    expect(reopened.getMeta("search_rowids")).toBe("1");
+    expect(reopened.searchSpans("latestneedle")).toHaveLength(1);
+    for (const text of ["legacyneedle", "markerneedle", "orphanneedle"]) expect(reopened.searchSpans(text)).toEqual([]);
+    expect(reopened.db.prepare("SELECT rowid FROM span_fts").all()).toEqual([{ rowid: 1 }]);
+    expect(reopened.getOtlpSpan(original.traceId, original.spanId)?.span.attributes).toEqual(original.attributes);
+    await new Promise<number>((resolve) => reopened.reindexSearch(resolve));
+    expect(reopened.searchSpans("latestneedle")).toEqual([]);
+    expect(reopened.searchSpans("payloadneedle")).toHaveLength(1);
+  });
+
   it("uses the current rowid when a second Store replaces a selected reindex row", async () => {
     const st = store();
     const original = toolSpan(hex(16), "", "lookup", "{}", "oldneedle");

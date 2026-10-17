@@ -450,6 +450,8 @@ export class Store {
   private migrateSearchRowids(): void {
     if (this.getMeta("search_rowids") === "1") return;
     this.db.transaction(() => {
+      // Another Store may have completed the migration while we waited for the writer.
+      if (this.getMeta("search_rowids") === "1") return;
       this.db.exec(`
         CREATE TEMP TABLE search_rows AS
           SELECT s.rowid AS id, f.trace_id, f.span_id, f.name, f.tool_name, f.body
@@ -463,7 +465,7 @@ export class Store {
         DROP TABLE search_rows;
       `);
       this.setMeta("search_rowids", "1");
-    })();
+    }).immediate();
   }
 
   // ------------------------------------------------------------------ ingest
