@@ -424,6 +424,7 @@ export class Store {
     this.db.pragma("busy_timeout = 5000");
     this.db.exec(SCHEMA);
     this.migrate();
+    this.migrateSearchRowids();
     this.blobs = new BlobStore(path.join(dir, "blobs"));
     const row = this.db.prepare("SELECT MAX(seq) AS s FROM spans").get() as { s: number | null };
     this.seq = row.s ?? 0;
@@ -443,6 +444,26 @@ export class Store {
     // Tool-result labels recorded before the rename to neatroots.
     this.db.prepare("UPDATE decisions SET check_id = 'neatroots.tool-result' WHERE check_id IN ('bolts.tool-result', 'neatbolt.tool-result')").run();
     this.db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '1')").run();
+  }
+
+  /** Align legacy search rows with span rowids once, without loading blob payloads. */
+  private migrateSearchRowids(): void {
+    if (this.getMeta("search_rowids") === "1") return;
+    this.db.transaction(() => {
+      this.db.exec(`
+        CREATE TEMP TABLE search_rows AS
+          SELECT s.rowid AS id, f.trace_id, f.span_id, f.name, f.tool_name, f.body
+          FROM span_fts f
+          JOIN (SELECT MAX(rowid) AS id FROM span_fts GROUP BY trace_id, span_id) latest ON latest.id = f.rowid
+          JOIN spans s ON s.trace_id = f.trace_id AND s.span_id = f.span_id
+          WHERE s.is_marker = 0;
+        DELETE FROM span_fts;
+        INSERT INTO span_fts(rowid, trace_id, span_id, name, tool_name, body)
+          SELECT id, trace_id, span_id, name, tool_name, body FROM search_rows;
+        DROP TABLE search_rows;
+      `);
+      this.setMeta("search_rowids", "1");
+    })();
   }
 
   // ------------------------------------------------------------------ ingest
@@ -485,10 +506,10 @@ export class Store {
           const view = buildView(span, b.resource.attributes);
           const previous = this.db
             .prepare(
-              `SELECT is_marker, span_kind, status_code, prompt_tokens, completion_tokens, total_tokens, blobs
+              `SELECT rowid AS search_id, is_marker, span_kind, status_code, prompt_tokens, completion_tokens, total_tokens, blobs
                FROM spans WHERE trace_id = ? AND span_id = ?`,
             )
-            .get(span.traceId, span.spanId) as (AggregateSpan & { blobs: string | null }) | undefined;
+            .get(span.traceId, span.spanId) as (AggregateSpan & { search_id: number; blobs: string | null }) | undefined;
           const previousBlobs = json<unknown>(previous?.blobs, null);
           if (Array.isArray(previousBlobs)) {
             for (const sha of previousBlobs) {
@@ -500,6 +521,8 @@ export class Store {
             u = { traceId: span.traceId, spans: [], runCreated: false, rootEnded: false, completed: false };
             updates.set(span.traceId, u);
           }
+          // FTS identity columns are unindexed; its integer rowid lookup avoids a full scan.
+          if (previous) this.db.prepare("DELETE FROM span_fts WHERE rowid = ?").run(previous.search_id);
           const row = this.writeSpan(span, view, resourceId, scopeId, now);
           u.spans.push({ row, view, isNew: !previous });
           const runFlags = this.updateRun(span, view, row, resAttrs, now, previous);
@@ -559,7 +582,7 @@ export class Store {
       received_ms: now,
       seq: ++this.seq,
     };
-    this.db
+    const inserted = this.db
       .prepare(
         `INSERT OR REPLACE INTO spans (trace_id, span_id, parent_span_id, name, span_kind, otel_kind, start_ns, end_ns,
           start_ms, end_ms, duration_ms, status_code, status_message, model, provider, tool_name, prompt_tokens,
@@ -579,7 +602,7 @@ export class Store {
         blobs: used.size ? JSON.stringify([...used]) : null,
       });
     if (!view.isMarker) {
-      this.indexSpan(span.traceId, span.spanId, span.name, view);
+      this.indexSpan(Number(inserted.lastInsertRowid), span.traceId, span.spanId, span.name, view);
     }
     return row;
   }
@@ -1453,10 +1476,10 @@ export class Store {
   }
 
   /** Full-text index for a span: its input, output and error, as much as SEARCH_LIMIT allows. */
-  private indexSpan(traceId: string, spanId: string, name: string, view: SpanView): void {
-    this.db.prepare("DELETE FROM span_fts WHERE trace_id = ? AND span_id = ?").run(traceId, spanId);
+  private indexSpan(rowid: number, traceId: string, spanId: string, name: string, view: SpanView): void {
+    this.db.prepare("DELETE FROM span_fts WHERE rowid = ?").run(rowid);
     const body = [searchText(view.input), searchText(view.output), searchText(view.error ?? undefined)].join("\n");
-    this.db.prepare("INSERT INTO span_fts (trace_id, span_id, name, tool_name, body) VALUES (?, ?, ?, ?, ?)").run(traceId, spanId, name, view.toolName ?? "", body);
+    this.db.prepare("INSERT INTO span_fts (rowid, trace_id, span_id, name, tool_name, body) VALUES (?, ?, ?, ?, ?, ?)").run(rowid, traceId, spanId, name, view.toolName ?? "", body);
   }
 
   /**
@@ -1469,14 +1492,14 @@ export class Store {
     let n = 0;
     const step = () => {
       if (!this.db.open) return;
-      const rows = this.db.prepare("SELECT seq, trace_id, span_id FROM spans WHERE seq > ? ORDER BY seq LIMIT 300").all(after) as { seq: number; trace_id: string; span_id: string }[];
+      const rows = this.db.prepare("SELECT rowid AS search_id, seq, trace_id, span_id FROM spans WHERE seq > ? ORDER BY seq LIMIT 300").all(after) as { search_id: number; seq: number; trace_id: string; span_id: string }[];
       for (const r of rows) {
         after = r.seq;
         const full = this.getOtlpSpan(r.trace_id, r.span_id);
         if (!full) continue;
         const view = buildView(full.span, full.resource.attributes);
         if (view.isMarker) continue;
-        this.indexSpan(r.trace_id, r.span_id, full.span.name, view);
+        this.indexSpan(r.search_id, r.trace_id, r.span_id, full.span.name, view);
         n++;
       }
       if (rows.length) setImmediate(step);
