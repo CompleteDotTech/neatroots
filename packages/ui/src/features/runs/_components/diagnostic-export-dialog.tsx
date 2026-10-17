@@ -13,12 +13,16 @@ interface ExportPayload {
   };
   preview: { span_count: number; finding_count: number; check_count: number };
 }
+const PREVIEW_CHARACTERS = 32 * 1024;
 
 export function DiagnosticExportDialog({ traceId, open, onOpenChange }: { traceId: string; open: boolean; onOpenChange: (open: boolean) => void }) {
   const [payload, setPayload] = useState<ExportPayload>();
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(false);
-  const content = useMemo(() => (payload ? JSON.stringify(payload.bundle, null, 2) : ""), [payload]);
+  // The server refuses oversized exports before hydration and caps the JSON response.
+  // Keep download bytes complete; render at most 32 Ki characters in the DOM.
+  const content = useMemo(() => (payload ? JSON.stringify(payload.bundle) : ""), [payload]);
+  const preview = content.slice(0, PREVIEW_CHARACTERS);
 
   useEffect(() => {
     if (!open) {
@@ -60,7 +64,7 @@ export function DiagnosticExportDialog({ traceId, open, onOpenChange }: { traceI
         <DialogHeader className="min-w-0 text-left">
           <DialogTitle>Prepare diagnostic export</DialogTitle>
           <DialogDescription className="min-w-0 max-w-3xl text-left leading-relaxed">
-            This exports the run's already-recorded trace, findings and checks to a local JSON download. Recorded values are kept unless existing patterns match them; no extra environment or machine state is collected. Nothing is uploaded. Existing built-in and configured custom patterns used by Neatlogs Cloud forwarding cannot guarantee every sensitive value is detected.
+            This exports the run's already-recorded trace, findings and checks to a local JSON download. Check IDs use opaque aliases; already-clipped snippets are omitted. Nothing is uploaded. Existing built-in and configured custom patterns cannot guarantee every sensitive value is detected. Exports are limited to 2 MiB of source data and 4 MiB of JSON.
           </DialogDescription>
         </DialogHeader>
 
@@ -96,14 +100,17 @@ export function DiagnosticExportDialog({ traceId, open, onOpenChange }: { traceI
               <span>Redaction counts only; no sample values are shown.</span>
             </div>
             <ScrollArea
-              aria-label="Exact sanitized diagnostic bundle JSON"
+              aria-label="Sanitized diagnostic bundle JSON preview"
               className="h-[min(46vh,30rem)] min-h-44 min-w-0 rounded-lg border border-border bg-muted/40"
               viewportClassName="h-full overscroll-contain"
             >
               <pre data-testid="diagnostic-export-preview" className="min-w-0 max-w-full p-4 font-mono text-[11px] leading-5 whitespace-pre-wrap break-all text-foreground">
-                {content}
+                {preview}
               </pre>
             </ScrollArea>
+            {preview.length < content.length && (
+              <p className="text-xs text-muted-foreground" role="status">Preview shows the first 32 Ki characters. Download contains the complete sanitized bundle.</p>
+            )}
           </div>
         )}
 

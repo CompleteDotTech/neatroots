@@ -78,6 +78,33 @@ async function showExportWithTheme(page: Page, theme: "light" | "dark") {
 }
 
 test.describe("local diagnostic export", () => {
+  test("bounds the rendered preview while downloading the complete sanitized bundle", async ({ page }) => {
+    const bundle = { format: "neatroots.diagnostic-export", schema_version: 1, trace: { payload: "x".repeat(100_000) }, redactions: { matches: [] } };
+    await page.route("**/api/runs/*/diagnostic-export", (route) => route.fulfill({ json: { bundle, preview: { span_count: 1, finding_count: 0, check_count: 0 } } }));
+    const { dialog, preview } = await showExport(page);
+    expect((await preview.textContent())!.length).toBe(32 * 1024);
+    await expect(dialog.getByText("Preview shows the first 32 Ki characters.", { exact: false })).toBeVisible();
+    const downloadWait = page.waitForEvent("download");
+    await dialog.getByRole("button", { name: "Download diagnostic bundle" }).click();
+    const download = await downloadWait;
+    expect(await fs.promises.readFile(await download.path(), "utf8")).toBe(JSON.stringify(bundle));
+  });
+
+  test("shows an oversized-export refusal and keeps the dialog usable", async ({ page }) => {
+    const message = "Diagnostic export is too large. The limit is 2 MiB of source data and 4 MiB of JSON. Choose a smaller run.";
+    await page.route("**/api/runs/*/diagnostic-export", (route) => route.fulfill({ status: 413, json: { error: message } }));
+    await open(page, `runs/${state().supportRun}`);
+    await page.getByRole("button", { name: "More actions" }).click();
+    await page.getByRole("menuitem", { name: "Prepare diagnostic export" }).click();
+    const dialog = page.getByRole("dialog", { name: "Prepare diagnostic export" });
+    await expect(dialog.getByRole("alert")).toContainText(message);
+    await expect(dialog.getByRole("button", { name: "Download diagnostic bundle" })).toBeDisabled();
+    await expect(page.getByTestId("diagnostic-export-preview")).toHaveCount(0);
+    // The primitive appends an icon Close with screen-reader text after the footer.
+    await dialog.getByRole("button", { name: "Close", exact: true }).first().click();
+    await expect(dialog).toBeHidden();
+  });
+
   test("shows the sanitized bundle and downloads exactly that preview without forwarding", async ({ page }) => {
     const externalRequests: string[] = [];
     const localOrigin = new URL(state().url).origin;

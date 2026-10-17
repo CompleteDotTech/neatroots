@@ -174,7 +174,12 @@ neatlogs.init(workflow_name="refund-agent", flush_interval=0.5, instrumentations
   trace, finding and check data as stored, except where those existing patterns match. Already-clipped
   run previews, question titles, finding parameters, verification quotes and finding error messages
   are omitted. Full current questions and trace evidence remain with redaction; check IDs and other
-  metadata are retained. It does not gather extra environment or machine state. Nothing is uploaded
+  metadata are retained. Check IDs are replaced consistently by opaque aliases within each export,
+  including saved parameter keys and finding/decision references; original stored IDs are unchanged.
+  Exports above a conservative 2 MiB source-data budget or 4 MiB JSON budget are refused before
+  large payloads are hydrated or a response is serialized. The preview renders at most 32 Ki
+  characters; downloading an accepted export retains its complete sanitized JSON.
+  It does not gather extra environment or machine state. Nothing is uploaded
   automatically, and pattern matches cannot guarantee every sensitive value is removed. Currently
   enabled rules that apply to the run
   are included even when they raised no finding, and are marked as current. The bundle keeps saved

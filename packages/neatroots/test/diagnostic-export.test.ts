@@ -130,11 +130,15 @@ describe("local diagnostic export", () => {
     expect(bundle.trace.resourceSpans).toHaveLength(1);
     expect((bundle.trace.resourceSpans[0] as { scopeSpans?: unknown[] }).scopeSpans).toHaveLength(1);
     expect(bundle.findings).toHaveLength(1);
-    expect(bundle.checks.historical).toMatchObject({ recorded_check_ids: [check.id, "removed.check"], historical_definitions: "not-retained" });
+    const alias = bundle.findings[0].check_id;
+    const recorded = bundle.checks.historical.recorded_check_ids as string[];
+    expect(recorded[0]).toBe(alias);
+    expect(recorded.every((id) => /^check-[a-f0-9]{16}-\d+$/.test(id))).toBe(true);
+    expect(bundle.checks.historical).toMatchObject({ historical_definitions: "not-retained" });
     expect(bundle.checks.current_definitions).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ check_id: check.id, available: true, definition: expect.any(Object) }),
-        expect.objectContaining({ check_id: "removed.check", available: false, definition: null }),
+        expect.objectContaining({ check_id: alias, available: true, definition: expect.any(Object) }),
+        expect.objectContaining({ check_id: recorded[1], available: false, definition: null }),
       ]),
     );
     expect(preview).toEqual({ span_count: 1, finding_count: 1, check_count: bundle.checks.current_definitions.length });
@@ -212,10 +216,10 @@ describe("local diagnostic export", () => {
     expect(bundle.checks.decisions).toEqual([]);
     expect(bundle.checks.historical).toMatchObject({ plan_available: false, recorded_check_ids: [], historical_definitions: "not-retained" });
     expect(bundle.checks.current_definitions).toEqual(expect.arrayContaining([
-      expect.objectContaining({ check_id: applicable.id, enabled_now: true, currently_applicable_rule: true }),
+      expect.objectContaining({ enabled_now: true, currently_applicable_rule: true, definition: expect.objectContaining({ applies_to: { project: "diagnostic-app" } }) }),
     ]));
-    expect(bundle.checks.current_definitions.map(({ check_id }) => check_id)).not.toContain("diagnostics.other-project");
-    expect(bundle.checks.current_definitions.map(({ check_id }) => check_id)).not.toContain("diagnostics.disabled");
+    expect(JSON.stringify(bundle.checks.current_definitions)).not.toContain("other-app");
+    expect(bundle.checks.current_definitions.every((d) => d.enabled_now)).toBe(true);
     expect(preview).toMatchObject({ finding_count: 0, check_count: bundle.checks.current_definitions.length });
   });
 });
