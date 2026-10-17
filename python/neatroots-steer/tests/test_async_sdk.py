@@ -1,6 +1,5 @@
 """Optional real SDK smoke tests: no provider requests or API keys are needed."""
 
-import asyncio
 import contextvars
 import json
 import threading
@@ -8,10 +7,11 @@ import threading
 import pytest
 
 import neatroots_steer as steer
+from test_async_backends import run_backend
 
 
 @pytest.mark.parametrize("provider", ["openai", "anthropic"])
-def test_real_async_sdk_create_preserves_guidance_and_context(monkeypatch, provider):
+def test_real_async_sdk_create_preserves_guidance_and_context(monkeypatch, provider, run_backend):
     sdk = pytest.importorskip(provider)
     # Match the installed SDK's transport family (recent Anthropic uses httpx2).
     transport_package = next(base.__module__.split(".")[0] for base in sdk.DefaultAsyncHttpxClient.__mro__ if base.__name__ == "AsyncClient")
@@ -57,4 +57,4 @@ def test_real_async_sdk_create_preserves_guidance_and_context(monkeypatch, provi
             assert messages == [{"role": "user", "content": "hello"}]
         assert len(received) == 1
 
-    asyncio.run(run())
+    run_backend(run)

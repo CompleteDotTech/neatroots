@@ -20,13 +20,14 @@ Steering is opt-in per project in neatroots (neatroots steering advisory --proje
 
 from __future__ import annotations
 
-import asyncio
 import copy
 import functools
 import inspect
 import logging
 import os
 from typing import Any, Callable, Dict, List, Optional, Tuple
+
+from anyio import to_thread
 
 from ._client import RootsClient, Note, configure, get_client
 
@@ -317,10 +318,10 @@ def _wrap_method(
 
         @functools.wraps(original)
         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
-            # to_thread copies ContextVars, including the active trace, while
-            # flush/claim wait off-loop. Cancellation prevents the model call;
+            # Use the active asyncio/Trio backend and copy trace ContextVars.
+            # Abandoning the wait on cancellation prevents the model call;
             # an already running synchronous claim still finishes in its thread.
-            prepared = await asyncio.to_thread(prepare, kwargs)
+            prepared = await to_thread.run_sync(prepare, kwargs, abandon_on_cancel=True)
             return await original(*args, **prepared)
 
         async_wrapper.__neatroots_wrapped__ = True  # type: ignore[attr-defined]
