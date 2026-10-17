@@ -78,3 +78,44 @@ it("records synchronous spawn failure and allows another turn", async () => {
   expect(t!.roots.chats.get(s.id)?.state).toBe("idle");
   expect(t!.roots.chats.stop(s.id)).toBe(false);
 });
+
+it("flushes an incomplete UTF-8 diagnostic from a real subprocess at EOF", async () => {
+  const s = await session();
+  const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  const answer = "Café — 中文 🐈";
+  const diagnostic = "Provider failed: Café — 中文 🐈";
+  const event = JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: answer } }) + "\n";
+  const fixture = `process.stdout.write(${JSON.stringify(event)});
+    process.stderr.end(Buffer.concat([Buffer.from(${JSON.stringify(diagnostic)}), Buffer.from([0xe2, 0x82])]));
+    process.exitCode = 1;`;
+  vi.mocked(spawn).mockImplementationOnce((_bin, _args, options) => actual.spawn(process.execPath, ["-e", fixture], options));
+  await t!.roots.chats.send(s.id, "hello");
+  expect(vi.mocked(spawn).mock.calls[0][2]).toMatchObject({ detached: true });
+  const events = t!.roots.chats.events(s.id);
+  expect(events.filter((e) => e.kind === "text").map((e) => e.text)).toEqual([answer]);
+  expect(events.filter((e) => e.kind === "error").map((e) => e.text)).toEqual([diagnostic + "\ufffd"]);
+  expect(t!.roots.chats.get(s.id)?.state).toBe("error");
+  expect(t!.roots.chats.stop(s.id)).toBe(false);
+});
+
+it("ends an asynchronous spawn failure only once when close follows error", async () => {
+  const s = await session();
+  const p = child();
+  vi.mocked(spawn).mockReturnValueOnce(p as unknown as ChildProcess);
+  const ended: string[] = [];
+  const unsubscribe = t!.roots.bus.on("chat", (event) => {
+    if (event.session_id === s.id && event.state) ended.push(event.state);
+  });
+  try {
+    const done = t!.roots.chats.send(s.id, "hello");
+    p.emit("error", new Error("spawn ENOENT"));
+    p.emit("close", -2, null);
+    await done;
+    expect(t!.roots.chats.events(s.id).filter((e) => e.kind === "error").map((e) => e.text)).toEqual(["spawn ENOENT"]);
+    expect(ended).toEqual(["error"]);
+    expect(t!.roots.chats.get(s.id)?.state).toBe("error");
+    expect(t!.roots.chats.stop(s.id)).toBe(false);
+  } finally {
+    unsubscribe();
+  }
+});

@@ -113,8 +113,47 @@ export function signInHelp(agent: ChatAgent, message: string): string | null {
   return `${name} couldn't sign in, so it never reached neatroots. ${how}\n\n${message.trim().slice(0, 600)}`;
 }
 
+/**
+ * Signals an agent CLI and everything it started (tools, MCP servers): each turn runs in its own
+ * process group, so its children don't outlive a Stop.
+ */
+function signalGroup(p: ChildProcess, signal: NodeJS.Signals): void {
+  try {
+    if (p.pid) process.kill(-p.pid, signal);
+  } catch {
+    try {
+      p.kill(signal);
+    } catch {
+      /* already gone */
+    }
+  }
+}
+
+/** Whether anything in the agent's process group is still running. */
+function groupAlive(p: ChildProcess): boolean {
+  if (!p.pid) return false;
+  try {
+    process.kill(-p.pid, 0);
+    return true;
+  } catch {
+    return p.exitCode === null && p.signalCode === null;
+  }
+}
+
+/**
+ * Asks the agent's group to stop, then kills whatever is left 3 s later. The deadline doesn't depend
+ * on the turn still running: a tool that ignores SIGTERM can outlive the CLI that started it.
+ */
+function endGroup(p: ChildProcess): void {
+  signalGroup(p, "SIGTERM");
+  setTimeout(() => {
+    if (groupAlive(p)) signalGroup(p, "SIGKILL");
+  }, 3000).unref();
+}
+
 export class AgentChats {
   private readonly running = new Map<string, ChildProcess>();
+  private readonly stopping = new Set<string>();
 
   constructor(private readonly roots: Roots) {
     roots.store.db.exec(SCHEMA);
@@ -201,7 +240,8 @@ export class AgentChats {
   stop(id: string): boolean {
     const p = this.running.get(id);
     if (!p) return false;
-    p.kill("SIGTERM");
+    this.stopping.add(id);
+    endGroup(p);
     return true;
   }
 
@@ -238,7 +278,7 @@ export class AgentChats {
     log.debug(`chat ${id}: ${bin} ${args.slice(0, -1).join(" ")}`);
     let child: ChildProcess;
     try {
-      child = spawn(bin, args, { cwd: s.cwd, env: { ...process.env, NEATLOGS_ENDPOINT: `http://localhost:${this.roots.config.port}` }, stdio: ["ignore", "pipe", "pipe"] });
+      child = spawn(bin, args, { cwd: s.cwd, env: { ...process.env, NEATLOGS_ENDPOINT: `http://localhost:${this.roots.config.port}` }, stdio: ["ignore", "pipe", "pipe"], detached: true });
     } catch (err) {
       this.emit(id, { kind: "error", text: err instanceof Error ? err.message : String(err) });
       this.ended(id, "error");
@@ -269,15 +309,28 @@ export class AgentChats {
       stderr = (stderr + text).slice(-4000);
     });
     await new Promise<void>((resolve) => {
-      child.on("close", (code, signal) => {
+      let done = false;
+      const finish = (code: number | null, signal: NodeJS.Signals | null) => {
+        if (done) return;
+        done = true;
         this.running.delete(id);
-        if (signal) this.emit(id, { kind: "status", text: "Stopped" });
+        // The turn is over: anything the CLI started and left running goes with it.
+        endGroup(child);
+        const stopped = this.stopping.delete(id) || !!signal;
+        if (stopped) this.emit(id, { kind: "status", text: "Stopped" });
         else if (code !== 0 && !sawResult) this.emit(id, { kind: "error", text: this.explainFailure(s.agent, stderr) });
-        this.ended(id, code === 0 || signal || sawResult ? "idle" : "error");
+        this.ended(id, code === 0 || stopped || sawResult ? "idle" : "error");
         resolve();
-      });
+      };
+      // Normally the output closes right after the CLI exits. A child it left running can hold the
+      // output open, so the turn also ends shortly after the CLI itself exits.
+      child.on("exit", (code, signal) => setTimeout(() => finish(code, signal), 1500).unref());
+      child.on("close", (code, signal) => finish(code, signal));
       child.on("error", (err) => {
+        if (done) return;
+        done = true;
         this.running.delete(id);
+        this.stopping.delete(id);
         this.emit(id, { kind: "error", text: err.message });
         this.ended(id, "error");
         resolve();
