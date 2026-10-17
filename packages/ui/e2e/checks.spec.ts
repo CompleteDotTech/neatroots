@@ -46,16 +46,16 @@ test.describe("checks", () => {
 
   test("pending MCP checks can be previewed, approved, or rejected", async ({ page }, testInfo) => {
     const safeYaml = "id: pending-edit\nkind: rule\naction: flag\nrule: { type: count, span: { type: tool, name: lookup_order }, at_least: 3 }\n";
-    const editYaml = "id: pending-edit\nkind: rule\naction: halt\nrule: { type: count, span: { type: tool, name: lookup_order }, at_least: 1 }\n";
-    const newYaml = "id: pending-new\nkind: rule\naction: halt\nrule: { type: count, span: { type: tool, name: lookup_order }, at_least: 1 }\n";
+    const editYaml = "id: pending-edit\nkind: rule\naction: flag\nrule: { type: count, span: { type: tool, name: lookup_order }, at_least: 1 }\n";
+    const newYaml = "id: pending-new\nkind: rule\naction: flag\nrule: { type: count, span: { type: tool, name: lookup_order }, at_least: 1 }\n";
     let activeChecks = [{
       id: "pending-edit", kind: "rule", title: "Existing safe version", source: "user", path: "/checks/pending-edit.yaml", enabled: true,
       precision: { hits: 0, dismissed: 0, precision: null, noisy: false }, yaml: safeYaml,
       check: { id: "pending-edit", kind: "rule", action: "flag", rule: { type: "count", span: { type: "tool", name: "lookup_order" }, at_least: 3 } },
     }];
     let proposals = [
-      { id: "pending-edit", revision: "edit-revision", kind: "rule", title: "Edited halt rule", yaml: editYaml, check: { id: "pending-edit", kind: "rule", action: "halt" }, created_ms: 2, target_dir: "/checks", has_active_version: true },
-      { id: "pending-new", revision: "new-revision", kind: "rule", title: "New halt rule", yaml: newYaml, check: { id: "pending-new", kind: "rule", action: "halt" }, created_ms: 1, target_dir: null, has_active_version: false },
+      { id: "pending-edit", revision: "edit-revision", kind: "rule", title: "Edited flag rule", yaml: editYaml, check: { id: "pending-edit", kind: "rule", action: "flag" }, created_ms: 2, target_dir: "/checks", has_active_version: true },
+      { id: "pending-new", revision: "new-revision", kind: "rule", title: "New flag rule", yaml: newYaml, check: { id: "pending-new", kind: "rule", action: "flag" }, created_ms: 1, target_dir: null, has_active_version: false },
     ];
     await page.route("**/api/checks", async (route) => {
       if (route.request().method() !== "GET") return route.continue();
@@ -65,7 +65,7 @@ test.describe("checks", () => {
     await page.route("**/api/checks/pending-edit/approve", async (route) => {
       expect(route.request().postDataJSON()).toEqual({ revision: "edit-revision" });
       proposals = proposals.filter((p) => p.id !== "pending-edit");
-      activeChecks = [{ ...activeChecks[0], source: "mcp", title: "Edited halt rule", yaml: editYaml, check: { ...activeChecks[0].check, action: "halt", rule: { type: "count", span: { type: "tool", name: "lookup_order" }, at_least: 1 } } }];
+      activeChecks = [{ ...activeChecks[0], source: "mcp", title: "Edited flag rule", yaml: editYaml, check: { ...activeChecks[0].check, action: "flag", rule: { type: "count", span: { type: "tool", name: "lookup_order" }, at_least: 1 } } }];
       await route.fulfill({ json: { ok: true, id: "pending-edit", path: "/checks/pending-edit.yaml", source: "mcp" } });
     });
     await page.route("**/api/checks/pending-new/reject", async (route) => {
@@ -92,7 +92,7 @@ test.describe("checks", () => {
     await expect(edit.getByText("Fires on 1 of 2 runs")).toBeVisible();
     await edit.getByRole("button", { name: "Approve check" }).click();
     await expect(page.getByTestId("mcp-check-proposal").filter({ hasText: "pending-edit" })).toHaveCount(0);
-    await expect(page.getByRole("row").filter({ hasText: "Edited halt rule" })).toBeVisible();
+    await expect(page.getByRole("row").filter({ hasText: "Edited flag rule" })).toBeVisible();
     await page.getByTestId("mcp-check-proposal").filter({ hasText: "pending-new" }).getByRole("button", { name: "Reject check" }).click();
     await expect(page.getByTestId("mcp-check-proposal")).toHaveCount(0);
   });

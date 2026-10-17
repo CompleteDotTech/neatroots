@@ -91,6 +91,8 @@ export interface RootsConfig {
     apiBase?: string;
     /** The Neatlogs Cloud project imports read from (x-project-id), for a service account that sees several. */
     projectId?: string;
+    /** Send keys to a cloud endpoint outside *.neatlogs.com (https only), e.g. a self-hosted Neatlogs. */
+    trustEndpoint?: boolean;
     /** User regexes to redact before forwarding, in addition to the built-ins. */
     redactPatterns: string[];
   };

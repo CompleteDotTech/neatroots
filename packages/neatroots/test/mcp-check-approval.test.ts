@@ -22,7 +22,7 @@ it("an interrupted file save retains MCP provenance and stays inactive after reo
   let store = new Store(dataDir);
   try {
     let registry = new CheckRegistry(store, checksDir, () => []);
-    const check = { id: "interrupted-mcp", kind: "rule", action: "halt", rule: { type: "count", at_least: 1 } } as Check;
+    const check = { id: "interrupted-mcp", kind: "rule", action: "flag", rule: { type: "count", at_least: 1 } } as Check;
     const proposal = registry.proposeMcp(check, null);
     const upsert = store.upsertCheckRow.bind(store);
     const fail = vi.spyOn(store, "upsertCheckRow").mockImplementation((row) => {
@@ -52,7 +52,7 @@ it("a valid partial file from an interrupted write cannot reload as human-author
   let store = new Store(dataDir);
   try {
     let registry = new CheckRegistry(store, checksDir, () => []);
-    const check = { id: "partial-mcp", kind: "rule", action: "halt", guidance: "extra guidance", rule: { type: "count", at_least: 1 } } as Check;
+    const check = { id: "partial-mcp", kind: "rule", action: "flag", guidance: "extra guidance", rule: { type: "count", at_least: 1 } } as Check;
     const proposal = registry.proposeMcp(check, null);
     const original = fs.writeFileSync;
     const fail = vi.spyOn(fs, "writeFileSync").mockImplementation((file, data, options) => {
@@ -90,7 +90,7 @@ it.each([
 ])("does not overwrite a destination created after a proposal (%s)", async (_description, content) => {
   const t = await makeRoots({ noEngine: true });
   cleanup.push(t.close);
-  const check = { id: "destination-race", kind: "rule", action: "halt", rule: { type: "count", at_least: 1 } } as Check;
+  const check = { id: "destination-race", kind: "rule", action: "flag", rule: { type: "count", at_least: 1 } } as Check;
   const proposal = t.roots.checks.proposeMcp(check, null);
   const dir = path.join(t.roots.home, "checks");
   fs.mkdirSync(dir, { recursive: true });
@@ -106,7 +106,7 @@ it.each([
 it("preserves unrelated YAML entries at an existing proposal destination", async () => {
   const t = await makeRoots({ noEngine: true });
   cleanup.push(t.close);
-  const check = { id: "shared-destination", kind: "rule", action: "halt", rule: { type: "count", at_least: 1 } } as Check;
+  const check = { id: "shared-destination", kind: "rule", action: "flag", rule: { type: "count", at_least: 1 } } as Check;
   const dir = path.join(t.roots.home, "checks");
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `${check.id}.yaml`);
@@ -124,7 +124,7 @@ it("approval and rejection require the exact proposal revision that was reviewed
   const t = await makeRoots({ serve: true, noEngine: true });
   cleanup.push(t.close);
   const first = t.roots.checks.proposeMcp({ id: "revision-check", kind: "rule", action: "flag", rule: { type: "count", at_least: 3 } } as Check, null);
-  const second = t.roots.checks.proposeMcp({ ...first.check, action: "halt" } as Check, null);
+  const second = t.roots.checks.proposeMcp({ ...first.check, rule: { type: "count", at_least: 5 } } as Check, null);
   expect(second.revision).not.toBe(first.revision);
   const act = (action: string, revision?: string) => fetch(`${t.url}/api/checks/revision-check/${action}`, {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ revision }),
@@ -136,12 +136,13 @@ it("approval and rejection require the exact proposal revision that was reviewed
   expect(t.roots.checks.pendingMcpCheck(first.check.id)?.revision).toBe(second.revision);
   expect((await act("approve", second.revision)).status).toBe(200);
   expect(t.roots.checks.isApprovedMcp(first.check.id)).toBe(true);
+  expect(t.roots.checks.get(first.check.id)?.check).toMatchObject({ rule: { at_least: 5 } });
 });
 
 it("rolls back the approval grant if completing the proposal fails", async () => {
   const t = await makeRoots({ noEngine: true });
   cleanup.push(t.close);
-  const check = { id: "atomic-approval", kind: "rule", action: "halt", rule: { type: "count", at_least: 1 } } as Check;
+  const check = { id: "atomic-approval", kind: "rule", action: "flag", rule: { type: "count", at_least: 1 } } as Check;
   const proposal = t.roots.checks.proposeMcp(check, null);
   const fault = vi.spyOn(t.roots.store, "deleteMcpCheckProposal").mockImplementation(() => { throw new Error("completion failed"); });
   expect(() => t.roots.checks.approvePendingMcp(check.id, proposal.revision)).toThrow("completion failed");
@@ -155,7 +156,7 @@ it("does not overwrite an active definition edited after the agent submitted its
   const t = await makeRoots({ noEngine: true });
   cleanup.push(t.close);
   const active = t.roots.checks.save({ id: "concurrent-check", kind: "rule", action: "flag", rule: { type: "count", at_least: 3 } } as Check, "user");
-  const proposal = t.roots.checks.proposeMcp({ ...active.check, action: "halt" } as Check, null);
+  const proposal = t.roots.checks.proposeMcp({ ...active.check, rule: { type: "count", at_least: 5 } } as Check, null);
   fs.writeFileSync(active.path!, ruleYaml("concurrent-check", "flag", 7));
   expect(() => t.roots.checks.approvePendingMcp(active.check.id, proposal.revision)).toThrow("active check changed");
   expect(fs.readFileSync(active.path!, "utf8")).toContain("at_least: 7");
@@ -177,7 +178,7 @@ it("refuses a shadowed destination without changing either project file", async 
   t.roots.checks.reload();
   const current = t.roots.checks.get("shadowed-check")!;
   expect(current.path).toBe(path.join(late, "shadowed-check.yaml"));
-  expect(() => t.roots.checks.proposeMcp({ ...current.check, action: "halt" } as Check, early)).toThrow("active check directory");
+  expect(() => t.roots.checks.proposeMcp({ ...current.check, rule: { type: "count", at_least: 5 } } as Check, early)).toThrow("active check directory");
   expect(fs.readFileSync(path.join(early, "shadowed-check.yaml"), "utf8")).toBe(first);
   expect(fs.readFileSync(path.join(late, "shadowed-check.yaml"), "utf8")).toBe(second);
   expect(t.roots.checks.isApprovedMcp(current.check.id)).toBe(false);
@@ -186,7 +187,7 @@ it("refuses a shadowed destination without changing either project file", async 
 it("neither legacy MCP rows nor changed approved definitions inherit approval", async () => {
   const t = await makeRoots({ noEngine: true });
   cleanup.push(t.close);
-  const check = { id: "legacy-mcp", kind: "rule", action: "halt", rule: { type: "count", at_least: 1 } } as Check;
+  const check = { id: "legacy-mcp", kind: "rule", action: "flag", rule: { type: "count", at_least: 1 } } as Check;
   t.roots.checks.save(check, "db", "mcp");
   expect(t.roots.checks.enabled().some((c) => c.check.id === check.id)).toBe(false);
   const proposal = t.roots.checks.proposeMcp(check, null);
@@ -215,28 +216,28 @@ it("MCP edits stay pending without changing the active check before approval", a
     expect(Object.keys(draft).sort()).toEqual(["id", "saved", "warnings", "yaml"]);
     expect(t.roots.checks.pendingMcp()).toHaveLength(0);
 
-    const proposal = resultJson(await client.callTool({ name: "create_check", arguments: { check: ruleYaml("protected", "halt", 1) } }));
+    const proposal = resultJson(await client.callTool({ name: "create_check", arguments: { check: ruleYaml("protected", "flag", 1) } }));
     expect(proposal).toMatchObject({ saved: true, pending_approval: true, approved: false, active_version_unchanged: true, path: null });
     expect(t.roots.checks.get("protected")?.check).toMatchObject({ action: "flag", rule: { at_least: 3 } });
     expect(fs.readFileSync(file, "utf8")).toBe(original);
-    expect(t.roots.checks.pendingMcpCheck("protected")?.check).toMatchObject({ action: "halt", rule: { at_least: 1 } });
+    expect(t.roots.checks.pendingMcpCheck("protected")?.check).toMatchObject({ action: "flag", rule: { at_least: 1 } });
 
     const listed = await (await fetch(`${t.url}/api/checks`)).json() as { checks: { id: string; source: string; check: Check }[]; pending_mcp_checks: { id: string; has_active_version: boolean }[] };
     expect(listed.checks.find((c) => c.id === "protected")).toMatchObject({ source: "user", check: { action: "flag", rule: { at_least: 3 } } });
     expect(listed.pending_mcp_checks).toContainEqual(expect.objectContaining({ id: "protected", has_active_version: true }));
 
     t.roots.checks.reload();
-    expect(t.roots.checks.pendingMcpCheck("protected")?.check).toMatchObject({ action: "halt" });
+    expect(t.roots.checks.pendingMcpCheck("protected")?.check).toMatchObject({ action: "flag", rule: { at_least: 1 } });
     expect(t.roots.checks.get("protected")?.check).toMatchObject({ action: "flag", rule: { at_least: 3 } });
 
     const approved = await fetch(`${t.url}/api/checks/protected/approve`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ revision: t.roots.checks.pendingMcpCheck("protected")!.revision }) });
     expect(approved.status).toBe(200);
     expect(await approved.json()).toMatchObject({ ok: true, id: "protected", path: file, source: "mcp" });
     const updated = fs.readFileSync(file, "utf8");
-    expect(updated).toContain("action: halt");
+    expect(updated).toContain("action: flag");
     expect(updated).toContain("id: unrelated-entry");
     expect(updated).toContain("at_least: 11");
-    expect(t.roots.checks.get("protected")?.check).toMatchObject({ action: "halt", rule: { at_least: 1 } });
+    expect(t.roots.checks.get("protected")?.check).toMatchObject({ action: "flag", rule: { at_least: 1 } });
     expect(t.roots.checks.get("protected")?.source).toBe("mcp");
     t.roots.checks.reload();
     expect(t.roots.checks.get("protected")?.source).toBe("mcp");
@@ -253,21 +254,21 @@ it("new MCP checks stay inactive and approval provenance survives a database reo
   let store = new Store(dataDir);
   try {
     let registry = new CheckRegistry(store, checksDir, () => []);
-    const proposed = { id: "new-mcp-rule", kind: "rule", action: "halt", rule: { type: "count", span: { type: "tool", name: "lookup_order" }, at_least: 1 } } as Check;
+    const proposed = { id: "new-mcp-rule", kind: "rule", action: "flag", rule: { type: "count", span: { type: "tool", name: "lookup_order" }, at_least: 1 } } as Check;
     registry.proposeMcp(proposed, null);
     expect(registry.get(proposed.id)).toBeUndefined();
     store.close();
 
     store = new Store(dataDir);
     registry = new CheckRegistry(store, checksDir, () => []);
-    expect(registry.pendingMcpCheck(proposed.id)?.check).toMatchObject({ action: "halt" });
+    expect(registry.pendingMcpCheck(proposed.id)?.check).toMatchObject({ action: "flag" });
     const approved = registry.approvePendingMcp(proposed.id, registry.pendingMcpCheck(proposed.id)!.revision);
-    expect(approved).toMatchObject({ source: "mcp", check: { id: proposed.id, action: "halt" } });
+    expect(approved).toMatchObject({ source: "mcp", check: { id: proposed.id, action: "flag" } });
     store.close();
 
     store = new Store(dataDir);
     registry = new CheckRegistry(store, checksDir, () => []);
-    expect(registry.get(proposed.id)).toMatchObject({ source: "mcp", check: { action: "halt" } });
+    expect(registry.get(proposed.id)).toMatchObject({ source: "mcp", check: { action: "flag" } });
     expect(registry.pendingMcpCheck(proposed.id)).toBeUndefined();
   } finally {
     store.close();
@@ -286,7 +287,7 @@ it("rejecting an MCP edit discards only the proposal", async () => {
   t.roots.checks.reload();
   const client = await connect(t.url);
   try {
-    await client.callTool({ name: "create_check", arguments: { check: ruleYaml("keep", "halt", 1) } });
+    await client.callTool({ name: "create_check", arguments: { check: ruleYaml("keep", "flag", 1) } });
     const rejected = await fetch(`${t.url}/api/checks/keep/reject`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ revision: t.roots.checks.pendingMcpCheck("keep")!.revision }) });
     expect(rejected.status).toBe(200);
     expect(await rejected.json()).toMatchObject({ ok: true, id: "keep" });
@@ -298,12 +299,12 @@ it("rejecting an MCP edit discards only the proposal", async () => {
   }
 });
 
-it("only an approved MCP halt rule can create a halt note", async () => {
+it("only an approved MCP flag rule can raise a finding", async () => {
   const t = await makeRoots({ noEngine: false });
   cleanup.push(t.close);
-  const id = "approved-mcp-halt";
-  const haltRule = { id, kind: "rule", action: "halt", rule: { type: "count", at_least: 1 } } as Check;
-  t.roots.checks.proposeMcp(haltRule, null);
+  const id = "approved-mcp-flag";
+  const flagRule = { id, kind: "rule", action: "flag", rule: { type: "count", at_least: 1 } } as Check;
+  t.roots.checks.proposeMcp(flagRule, null);
 
   const runOneSpan = async (traceId: string) => {
     const root = span({ traceId, name: "agent", kind: "workflow" });
@@ -320,7 +321,7 @@ it("only an approved MCP halt rule can create a halt note", async () => {
   const approvedTrace = hex(16);
   await runOneSpan(approvedTrace);
   expect(t.roots.store.listFindings({ traceId: approvedTrace }).some((f) => f.check_id === id)).toBe(true);
-  expect(t.roots.store.notesForTrace(approvedTrace).some((n) => n.kind === "halt")).toBe(true);
+  expect(t.roots.store.notesForTrace(approvedTrace).some((n) => n.kind === "halt")).toBe(false);
 });
 
 it("preview_check by id previews the pending version", async () => {

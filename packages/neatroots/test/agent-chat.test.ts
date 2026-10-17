@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { makeRoots, type TestRoots } from "./helpers.js";
+import { makeRoots, poll, type TestRoots } from "./helpers.js";
 
 // These integration fixtures execute POSIX shell scripts. Native Windows agent launching
 // needs separate executable fixtures; do not replace process execution with canned success.
@@ -76,6 +76,72 @@ echo '{"type":"result","subtype":"success","is_error":true,"result":"${err}","se
     expect(errors[0].text).toMatch(/Claude Code couldn't sign in[\s\S]*Amazon Bedrock[\s\S]*Could not load AWS credentials/);
     expect(events.find((e) => e.kind === "result")?.text).toBeUndefined();
   });
+});
+
+describe.skipIf(process.platform === "win32")("stopping a chat turn (#23.19)", () => {
+  it("ends the turn and stops what the agent started, even when a child holds its output open", async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "neatroots-chat-"));
+    process.env.HOME = dir;
+    const childPid = path.join(dir, "child.pid");
+    // An agent whose tool keeps running (and keeps stdout open) until it is stopped.
+    process.env.NEATROOTS_CODEX_BIN = script(
+      "codex",
+      `echo '{"type":"thread.started","thread_id":"thread_s"}'
+sleep 60 &
+echo $! > "${childPid}"
+wait`,
+    );
+    t = await makeRoots({ noEngine: true });
+    const s = t.roots.chats.create({ agent: "codex", cwd: dir });
+    const turn = t.roots.chats.send(s.id, "run a long tool");
+    await poll(async () => fs.existsSync(childPid) && fs.readFileSync(childPid, "utf8").trim());
+    const pid = Number(fs.readFileSync(childPid, "utf8").trim());
+    expect(t.roots.chats.stop(s.id)).toBe(true);
+    await turn;
+    expect(t.roots.chats.get(s.id)!.state).toBe("idle");
+    expect(t.roots.chats.events(s.id).some((e) => e.kind === "status" && e.text === "Stopped")).toBe(true);
+    const alive = () => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    await poll(async () => !alive(), 5000);
+  }, 20_000);
+});
+
+describe.skipIf(process.platform === "win32")("stopping a chat turn whose tool ignores SIGTERM", () => {
+  it("still kills the tool after the escalation deadline, though the turn has already ended", async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "neatroots-chat-"));
+    process.env.HOME = dir;
+    const childPid = path.join(dir, "child.pid");
+    // The CLI exits on SIGTERM; the tool it started ignores SIGTERM and keeps stdout open.
+    process.env.NEATROOTS_CODEX_BIN = script(
+      "codex",
+      `echo '{"type":"thread.started","thread_id":"thread_k"}'
+"${process.execPath}" -e 'process.on("SIGTERM", () => {}); require("fs").writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000)' "${childPid}" &
+wait`,
+    );
+    t = await makeRoots({ noEngine: true });
+    const s = t.roots.chats.create({ agent: "codex", cwd: dir });
+    const turn = t.roots.chats.send(s.id, "run a stubborn tool");
+    await poll(async () => fs.existsSync(childPid) && fs.readFileSync(childPid, "utf8").trim());
+    const pid = Number(fs.readFileSync(childPid, "utf8").trim());
+    expect(t.roots.chats.stop(s.id)).toBe(true);
+    await turn;
+    expect(t.roots.chats.get(s.id)!.state).toBe("idle");
+    const alive = () => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    await poll(async () => !alive(), 8000);
+  }, 20_000);
 });
 
 describe.skipIf(process.platform === "win32")("a chat with Codex whose message starts with a dash", () => {

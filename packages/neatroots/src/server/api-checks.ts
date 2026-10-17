@@ -6,6 +6,7 @@ import { parseChecks, checkDirState } from "../checks/registry.js";
 import { checkWarnings } from "../checks/lint.js";
 import { draftCheckFromConcern } from "../engine/assist.js";
 import { err, body } from "./util.js";
+import { llmErrorMessage } from "../models/llm.js";
 
 /** Accepts a check as YAML text, a JSON object, or {yaml}. */
 export function checkFromInput(input: unknown): { check?: Check; error?: string } {
@@ -85,7 +86,7 @@ export function mountChecksApi(app: Hono, roots: Roots): void {
       if (!approved) return err(c, 404, "pending MCP check proposal not found");
       return c.json({ ok: true, id: approved.check.id, path: approved.path, source: approved.source });
     } catch (error) {
-      if ((error as Error).message.includes("changed;") || (error as Error).message.includes("approval target conflict;")) return err(c, 409, (error as Error).message);
+      if ((error as Error).message.includes("changed;") || (error as Error).message.includes("approval target conflict;") || (error as Error).message.includes("halt rules must be created")) return err(c, 409, (error as Error).message);
       throw error;
     }
   });
@@ -118,7 +119,7 @@ export function mountChecksApi(app: Hono, roots: Roots): void {
       const check = await draftCheckFromConcern(roots, b.concern, { workflow: b.workflow, project: b.project, signal: c.req.raw.signal });
       return c.json({ check, yaml: YAML.stringify(check), warnings: checkWarnings(check) });
     } catch (e) {
-      return err(c, 503, (e as Error).message);
+      return err(c, 503, llmErrorMessage(e));
     }
   });
 
@@ -131,7 +132,7 @@ export function mountChecksApi(app: Hono, roots: Roots): void {
       const r = await engine.previewCheck(check, { limit: b.limit ?? 50, workflow: b.workflow, project: b.project, signal: c.req.raw.signal });
       return c.json({ ...r, hit_rate: r.checked ? r.hits.length / r.checked : null, warnings: checkWarnings(check) });
     } catch (e) {
-      return err(c, 503, (e as Error).message);
+      return err(c, 503, llmErrorMessage(e));
     }
   });
 

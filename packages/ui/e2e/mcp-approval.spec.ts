@@ -26,7 +26,7 @@ test("a real MCP proposal activates only after approval in the app", async ({ pa
     await open(page, "checks");
     await eventsReady;
     expect((await list()).pending_mcp_checks.some((c: { id: string }) => c.id === id)).toBe(false);
-    await propose(`id: ${id}\nkind: rule\naction: halt\nrule: { type: count, at_least: 2 }\n`);
+    await propose(`id: ${id}\nkind: rule\naction: flag\nrule: { type: count, at_least: 2 }\n`);
     const pending = await list();
     expect(pending.checks.some((c: { id: string }) => c.id === id)).toBe(false);
     expect(pending.pending_mcp_checks.some((c: { id: string }) => c.id === id)).toBe(true);

@@ -6,6 +6,7 @@ import YAML from "yaml";
 import { AnyCheck, isQuestion, isRule, type Check, type CheckSource, type LoadedCheck } from "./types.js";
 import type { McpCheckProposalRow, Store } from "../store/db.js";
 import { log } from "../util/log.js";
+import { assertNoHaltFromAgent } from "./agent-policy.js";
 
 function findLibraryDir(): string {
   let dir = path.dirname(fileURLToPath(import.meta.url));
@@ -296,6 +297,7 @@ export class CheckRegistry {
     const parsed = AnyCheck.parse(check) as Check;
     this.reload();
     const active = this.get(parsed.id);
+    assertNoHaltFromAgent(parsed, active?.check);
     if (active?.path && active.source !== "library" && targetDir && path.resolve(targetDir) !== path.resolve(path.dirname(active.path))) throw new Error("MCP edits must target the active check directory");
     this.store.upsertMcpCheckProposal(parsed.id, checkToYaml(parsed), targetDir, newId("proposal"), this.approvalFingerprint(parsed.id, targetDir, parsed));
     const proposal = this.pendingMcpCheck(parsed.id);
@@ -346,6 +348,7 @@ export class CheckRegistry {
 
   private saveApprovedMcp(check: Check, destination: string, snapshot: CheckDestinationSnapshot): LoadedCheck {
     const parsed = AnyCheck.parse(check) as Check;
+    assertNoHaltFromAgent(parsed, this.get(parsed.id)?.check);
     if (snapshot.kind === "other") throw new Error("approval target conflict; destination is not a regular file");
     if (snapshot.kind === "unreadable") throw new Error("approval target conflict; destination cannot be read");
     const text = snapshot.kind === "file" ? replaceInYaml(snapshot.bytes.toString("utf8"), parsed) : checkToYaml(parsed);
@@ -417,6 +420,7 @@ export class CheckRegistry {
    */
   save(check: Check, target: "user" | "db" | { dir: string }, source: CheckSource = "user"): LoadedCheck {
     const parsed = AnyCheck.parse(check) as Check;
+    if (source === "mcp") assertNoHaltFromAgent(parsed, this.checks.get(parsed.id)?.check);
     let p: string | null = null;
     const recordOrigin = (file: string) => {
       if (source === "mcp") {
