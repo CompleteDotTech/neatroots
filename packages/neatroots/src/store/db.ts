@@ -458,6 +458,7 @@ export class Store {
   /** Stores spans losslessly and updates run, session and search rows. */
   ingest(batches: ResourceSpansBatch[]): TraceUpdate[] {
     const updates = new Map<string, TraceUpdate>();
+    const supersededBlobs = new Set<string>();
     const now = Date.now();
     const tx = this.db.transaction(() => {
       for (const b of batches) {
@@ -468,10 +469,16 @@ export class Store {
           const view = buildView(span, b.resource.attributes);
           const previous = this.db
             .prepare(
-              `SELECT is_marker, span_kind, status_code, prompt_tokens, completion_tokens, total_tokens
+              `SELECT is_marker, span_kind, status_code, prompt_tokens, completion_tokens, total_tokens, blobs
                FROM spans WHERE trace_id = ? AND span_id = ?`,
             )
-            .get(span.traceId, span.spanId) as AggregateSpan | undefined;
+            .get(span.traceId, span.spanId) as (AggregateSpan & { blobs: string | null }) | undefined;
+          const previousBlobs = json<unknown>(previous?.blobs, null);
+          if (Array.isArray(previousBlobs)) {
+            for (const sha of previousBlobs) {
+              if (typeof sha === "string" && /^[0-9a-f]{64}$/.test(sha)) supersededBlobs.add(sha);
+            }
+          }
           let u = updates.get(span.traceId);
           if (!u) {
             u = { traceId: span.traceId, spans: [], runCreated: false, rootEnded: false, completed: false };
@@ -487,6 +494,8 @@ export class Store {
       }
     });
     tx();
+    // Files are reclaimed only after the span replacement commits and no remaining span uses them.
+    this.reclaimUnreferencedBlobs(supersededBlobs);
     return [...updates.values()];
   }
 
@@ -1360,8 +1369,13 @@ export class Store {
       this.db.prepare(`DELETE FROM runs WHERE ${inIds}`).run(ids);
     });
     tx();
+    this.reclaimUnreferencedBlobs(shas);
+  }
+
+  /** Deletes candidate payloads only after checking every remaining span reference. */
+  private reclaimUnreferencedBlobs(candidates: Iterable<string>): void {
+    const shas = [...new Set(candidates)];
     if (!shas.length) return;
-    // A blob can be shared by runs; keep the ones a remaining span still uses.
     const used = new Set(
       (this.db.prepare("SELECT DISTINCT j.value AS sha FROM spans, json_each(CASE WHEN json_valid(spans.blobs) THEN spans.blobs ELSE '[]' END) AS j WHERE spans.blobs IS NOT NULL AND j.value IN (SELECT value FROM json_each(?))").all(JSON.stringify(shas)) as { sha: string }[]).map((r) => r.sha),
     );
