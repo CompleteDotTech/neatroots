@@ -22,11 +22,14 @@ test("a real MCP proposal activates only after approval in the app", async ({ pa
   const id = `approval-e2e-${testInfo.repeatEachIndex}-${Date.now()}`;
   const list = async () => (await page.request.get(`${state().url}/api/checks`)).json();
   try {
+    const eventsReady = page.waitForResponse((response) => response.url().endsWith("/api/events") && response.ok());
+    await open(page, "checks");
+    await eventsReady;
+    expect((await list()).pending_mcp_checks.some((c: { id: string }) => c.id === id)).toBe(false);
     await propose(`id: ${id}\nkind: rule\naction: halt\nrule: { type: count, at_least: 2 }\n`);
     const pending = await list();
     expect(pending.checks.some((c: { id: string }) => c.id === id)).toBe(false);
     expect(pending.pending_mcp_checks.some((c: { id: string }) => c.id === id)).toBe(true);
-    await open(page, "checks");
     const proposal = page.getByTestId("mcp-check-proposal").filter({ hasText: id });
     await expect(proposal).toBeVisible();
     await proposal.getByRole("button", { name: "Approve check" }).click();

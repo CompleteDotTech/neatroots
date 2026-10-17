@@ -89,6 +89,12 @@ export interface PendingMcpCheck {
   has_active_version: boolean;
 }
 
+type CheckDestinationSnapshot =
+  | { kind: "missing" }
+  | { kind: "file"; bytes: Buffer }
+  | { kind: "other" }
+  | { kind: "unreadable"; code: string };
+
 /** Parses YAML holding one check, a list of checks, or `{checks: [...]}`. */
 export function parseChecks(text: string): { checks: Check[]; errors: { id?: string; message: string }[] } {
   const checks: Check[] = [];
@@ -291,7 +297,7 @@ export class CheckRegistry {
     this.reload();
     const active = this.get(parsed.id);
     if (active?.path && active.source !== "library" && targetDir && path.resolve(targetDir) !== path.resolve(path.dirname(active.path))) throw new Error("MCP edits must target the active check directory");
-    this.store.upsertMcpCheckProposal(parsed.id, checkToYaml(parsed), targetDir, newId("proposal"), this.activeFingerprint(parsed.id));
+    this.store.upsertMcpCheckProposal(parsed.id, checkToYaml(parsed), targetDir, newId("proposal"), this.approvalFingerprint(parsed.id, targetDir, parsed));
     const proposal = this.pendingMcpCheck(parsed.id);
     if (!proposal) throw new Error(`could not save MCP check proposal ${parsed.id}`);
     return proposal;
@@ -300,6 +306,66 @@ export class CheckRegistry {
   private activeFingerprint(id: string): string {
     const active = this.get(id);
     return sha256(JSON.stringify(active ? [checkToYaml(active.check), active.path, active.source, this.store.checkStats()[id]?.enabled] : null));
+  }
+
+  private approvalDestination(id: string, targetDir: string | null, check: Check): string {
+    const active = this.get(id);
+    const dir = targetDir || this.userDir;
+    const canUpdateActive =
+      active?.path &&
+      (active.source === "user" || active.source === "project" || active.source === "mcp") &&
+      (!targetDir || path.resolve(path.dirname(active.path)) === path.resolve(dir)) &&
+      fs.existsSync(active.path);
+    if (canUpdateActive && active?.path) {
+      const existing = fs.readFileSync(active.path, "utf8");
+      if (replaceInYaml(existing, check) !== undefined) return active.path;
+    }
+    return path.join(dir, `${id}.yaml`);
+  }
+
+  private destinationSnapshot(file: string): CheckDestinationSnapshot {
+    try {
+      const stat = fs.lstatSync(file);
+      return stat.isFile() ? { kind: "file", bytes: fs.readFileSync(file) } : { kind: "other" };
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      return code === "ENOENT" ? { kind: "missing" } : { kind: "unreadable", code: code ?? "unknown" };
+    }
+  }
+
+  private destinationFingerprint(file: string, snapshot: CheckDestinationSnapshot): string {
+    const state = snapshot.kind === "file" ? [snapshot.kind, sha256(snapshot.bytes)] : snapshot.kind === "unreadable" ? [snapshot.kind, snapshot.code] : [snapshot.kind];
+    return sha256(JSON.stringify([path.resolve(file), state]));
+  }
+
+  private approvalFingerprint(id: string, targetDir: string | null, check: Check): string {
+    const destination = this.approvalDestination(id, targetDir, check);
+    const snapshot = this.destinationSnapshot(destination);
+    return JSON.stringify({ active: this.activeFingerprint(id), destination: this.destinationFingerprint(destination, snapshot) });
+  }
+
+  private saveApprovedMcp(check: Check, destination: string, snapshot: CheckDestinationSnapshot): LoadedCheck {
+    const parsed = AnyCheck.parse(check) as Check;
+    if (snapshot.kind === "other") throw new Error("approval target conflict; destination is not a regular file");
+    if (snapshot.kind === "unreadable") throw new Error("approval target conflict; destination cannot be read");
+    const text = snapshot.kind === "file" ? replaceInYaml(snapshot.bytes.toString("utf8"), parsed) : checkToYaml(parsed);
+    if (text === undefined) throw new Error("approval target conflict; existing destination content does not contain this check ID");
+
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    this.store.setMeta(`mcp_origin:${parsed.id}`, JSON.stringify([checkToYaml(parsed), path.resolve(destination)]));
+    if (snapshot.kind === "missing") {
+      try {
+        fs.writeFileSync(destination, text, { encoding: "utf8", flag: "wx" });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error("approval target changed; destination was created during approval");
+        throw error;
+      }
+    } else {
+      fs.writeFileSync(destination, text, "utf8");
+    }
+    this.store.upsertCheckRow({ id: parsed.id, kind: parsed.kind === "rule" ? "rule" : "question", source: "mcp", path: destination, body: checkToYaml(parsed), enabled: parsed.enabled });
+    this.reload();
+    return this.checks.get(parsed.id) ?? { check: parsed, source: "mcp", path: destination };
   }
 
   isApprovedMcp(id: string): boolean {
@@ -313,12 +379,19 @@ export class CheckRegistry {
     if (!revision || proposal.revision !== revision) throw new Error("proposal changed; refresh and review it again");
     this.reload();
     const row = this.store.getMcpCheckProposal(id)!;
-    if (row.active_fingerprint !== this.activeFingerprint(id)) throw new Error("active check changed; ask the agent to submit a new proposal");
     const dir = proposal.target_dir;
+    const destination = this.approvalDestination(id, dir, proposal.check);
+    const snapshot = this.destinationSnapshot(destination);
+    let expected: { active?: string; destination?: string } | undefined;
+    try { expected = JSON.parse(row.active_fingerprint) as { active?: string; destination?: string }; } catch { /* proposals from the previous fingerprint format must be reviewed again */ }
+    if (expected?.active !== this.activeFingerprint(id)) throw new Error("active check changed; ask the agent to submit a new proposal");
+    if (expected.destination !== this.destinationFingerprint(destination, snapshot)) throw new Error("approval target changed; review the destination and submit a new proposal");
     if (dir && path.resolve(dir) !== path.resolve(this.userDir) && !this.projectDirs().some((p) => path.resolve(p) === path.resolve(dir))) throw new Error("approval target changed; submit a new proposal for a registered directory");
-    const state = checkDirState(dir ?? this.userDir);
+    const state = checkDirState(dir || this.userDir);
     if (!state.ok && !state.creatable) throw new Error(`approval target changed; that directory ${state.reason}`);
-    const approved = this.save(proposal.check, proposal.target_dir ? { dir: proposal.target_dir } : "user", "mcp");
+    const beforeWrite = this.destinationSnapshot(destination);
+    if (expected.destination !== this.destinationFingerprint(destination, beforeWrite)) throw new Error("approval target changed; review the destination and submit a new proposal");
+    const approved = this.saveApprovedMcp(proposal.check, destination, beforeWrite);
     if (!approved.path || checkToYaml(approved.check) !== checkToYaml(proposal.check)) throw new Error("approval target changed; another file shadows the proposed definition");
     if (dir && path.resolve(path.dirname(approved.path)) !== path.resolve(dir)) throw new Error("approval target changed; another file shadows the proposed destination");
     this.store.db.transaction(() => {

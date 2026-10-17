@@ -85,7 +85,7 @@ export function mountChecksApi(app: Hono, roots: Roots): void {
       if (!approved) return err(c, 404, "pending MCP check proposal not found");
       return c.json({ ok: true, id: approved.check.id, path: approved.path, source: approved.source });
     } catch (error) {
-      if ((error as Error).message.includes("changed;")) return err(c, 409, (error as Error).message);
+      if ((error as Error).message.includes("changed;") || (error as Error).message.includes("approval target conflict;")) return err(c, 409, (error as Error).message);
       throw error;
     }
   });

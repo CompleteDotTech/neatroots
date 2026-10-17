@@ -84,6 +84,42 @@ const resultJson = (result: { content: { text?: string }[] }) => JSON.parse(resu
 const ruleYaml = (id: string, action: "flag" | "halt", atLeast: number) =>
   `id: ${id}\nkind: rule\naction: ${action}\nrule: { type: count, span: { type: tool, name: lookup_order }, at_least: ${atLeast} }\n`;
 
+it.each([
+  ["another check", ruleYaml("another-check", "flag", 7)],
+  ["invalid work in progress", "id: broken\nkind: [\n"],
+])("does not overwrite a destination created after a proposal (%s)", async (_description, content) => {
+  const t = await makeRoots({ noEngine: true });
+  cleanup.push(t.close);
+  const check = { id: "destination-race", kind: "rule", action: "halt", rule: { type: "count", at_least: 1 } } as Check;
+  const proposal = t.roots.checks.proposeMcp(check, null);
+  const dir = path.join(t.roots.home, "checks");
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `${check.id}.yaml`);
+  fs.writeFileSync(file, content);
+
+  expect(() => t.roots.checks.approvePendingMcp(check.id, proposal.revision)).toThrow(/approval target changed/);
+  expect(fs.readFileSync(file, "utf8")).toBe(content);
+  expect(t.roots.checks.get(check.id)).toBeUndefined();
+  expect(t.roots.checks.pendingMcpCheck(check.id)?.revision).toBe(proposal.revision);
+});
+
+it("preserves unrelated YAML entries at an existing proposal destination", async () => {
+  const t = await makeRoots({ noEngine: true });
+  cleanup.push(t.close);
+  const check = { id: "shared-destination", kind: "rule", action: "halt", rule: { type: "count", at_least: 1 } } as Check;
+  const dir = path.join(t.roots.home, "checks");
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `${check.id}.yaml`);
+  const original = ruleYaml("unrelated-entry", "flag", 9);
+  fs.writeFileSync(file, original);
+  const proposal = t.roots.checks.proposeMcp(check, null);
+
+  expect(() => t.roots.checks.approvePendingMcp(check.id, proposal.revision)).toThrow(/approval target conflict/);
+  expect(fs.readFileSync(file, "utf8")).toBe(original);
+  expect(t.roots.checks.get(check.id)).toBeUndefined();
+  expect(t.roots.checks.pendingMcpCheck(check.id)?.revision).toBe(proposal.revision);
+});
+
 it("approval and rejection require the exact proposal revision that was reviewed", async () => {
   const t = await makeRoots({ serve: true, noEngine: true });
   cleanup.push(t.close);
@@ -168,7 +204,7 @@ it("MCP edits stay pending without changing the active check before approval", a
   const dir = path.join(t.roots.home, "checks");
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, "protected.yaml");
-  const original = ruleYaml("protected", "flag", 3);
+  const original = `${ruleYaml("protected", "flag", 3)}---\n${ruleYaml("unrelated-entry", "flag", 11)}`;
   fs.writeFileSync(file, original);
   t.roots.checks.reload();
 
@@ -196,7 +232,10 @@ it("MCP edits stay pending without changing the active check before approval", a
     const approved = await fetch(`${t.url}/api/checks/protected/approve`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ revision: t.roots.checks.pendingMcpCheck("protected")!.revision }) });
     expect(approved.status).toBe(200);
     expect(await approved.json()).toMatchObject({ ok: true, id: "protected", path: file, source: "mcp" });
-    expect(fs.readFileSync(file, "utf8")).toContain("action: halt");
+    const updated = fs.readFileSync(file, "utf8");
+    expect(updated).toContain("action: halt");
+    expect(updated).toContain("id: unrelated-entry");
+    expect(updated).toContain("at_least: 11");
     expect(t.roots.checks.get("protected")?.check).toMatchObject({ action: "halt", rule: { at_least: 1 } });
     expect(t.roots.checks.get("protected")?.source).toBe("mcp");
     t.roots.checks.reload();

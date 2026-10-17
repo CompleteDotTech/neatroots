@@ -387,6 +387,7 @@ export const TOOLS = [
       const prior = roots.checks.pendingMcpCheck(check.id);
       const targetDir = a.dir ?? prior?.target_dir ?? (active?.path && active.source !== "library" ? path.dirname(active.path) : null);
       const proposal = roots.checks.proposeMcp(check, targetDir);
+      roots.bus.emit("checks", { id: proposal.check.id });
       return {
         saved: true,
         id: proposal.check.id,

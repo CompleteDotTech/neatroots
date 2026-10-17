@@ -57,6 +57,7 @@ export function useLiveEvents(): { connected: boolean; spanTick: number } {
         void qc.invalidateQueries({ queryKey: appKeys.status });
         void qc.invalidateQueries({ queryKey: appKeys.projects });
       });
+      on("checks", () => void qc.invalidateQueries({ queryKey: appKeys.checks }));
       on("replay", (d) => {
         schedule(d.trace_id);
         if (typeof d.new_trace_id === "string") schedule(d.new_trace_id);
