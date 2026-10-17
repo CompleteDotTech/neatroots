@@ -121,8 +121,8 @@ function exportFinding(roots: Roots, finding: Finding, alias: string): Record<st
     updated_ms: finding.updated_ms,
     explanation: explanation
       ? {
-          cause: explanation.cause,
-          fix: explanation.fix,
+          // Investigations may echo clipped titles/evidence whose delimiters are already lost.
+          // Export the supporting metadata, not prose that pattern matching cannot safely redact.
           evidence_span_ids: explanation.evidence_span_ids,
           grounding: explanation.grounding,
           model: explanation.model,
@@ -232,7 +232,7 @@ export function prepareDiagnosticExport(roots: Roots, traceId: string): Diagnost
     redactions: {
       applied: true as const,
       rule_source: "cloud_forwarding" as const,
-      scope: "Check IDs use consistent opaque aliases within this bundle. Existing built-in and configured custom cloud-forwarding patterns apply to other matching strings and non-structural keys. Stored run previews, question titles, finding parameters, verification quotes and finding error messages are omitted because already-clipped values cannot be reliably redacted. Full current questions and trace evidence are retained with redaction. This cannot guarantee every sensitive value is detected.",
+      scope: "Check IDs use consistent opaque aliases within this bundle. Existing built-in and configured custom cloud-forwarding patterns apply to other matching strings and non-structural keys. Stored run previews, question titles, finding parameters, verification quotes and finding error messages are omitted because already-clipped values cannot be reliably redacted. Investigation cause/fix prose is omitted because it may echo that clipped evidence. Explanation evidence IDs, grounding, model and timestamp remain. Full current questions and trace evidence are retained with redaction. This cannot guarantee every sensitive value is detected.",
       matches: [] as { kind: string; count: number }[],
     },
   };

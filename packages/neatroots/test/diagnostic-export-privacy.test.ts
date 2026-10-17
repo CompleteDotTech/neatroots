@@ -5,7 +5,7 @@ import { checkTitle, type QuestionCheck, type RuleCheck } from "../src/checks/ty
 import { draftCheckFromConcern } from "../src/engine/assist.js";
 import { Engine } from "../src/engine/engine.js";
 import { loadTrace } from "../src/engine/trace.js";
-import { batch, hex, makeRoots, s, span, toolSpan } from "./helpers.js";
+import { batch, hex, makeRoots, s, span, toolSpan, llmSpan } from "./helpers.js";
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -84,6 +84,70 @@ describe("diagnostic export privacy", () => {
         expect(tb.roots.store.getFinding(finding.id)).toEqual(finding);
       });
     }
+  }
+
+  for (const secret of secrets.slice(0, 2)) {
+    it(`omits investigation prose echoing actual clipped titles/evidence for ${secret.name}`, async () => {
+      const tb = await makeRoots({ serve: true, noEngine: true, config: (cfg) => {
+        cfg.cloud.redactPatterns = ["CLIENT-BEGIN:[\\s\\S]*?:CLIENT-END"];
+      } });
+      cleanup.push(tb.close);
+      const traceId = hex(16);
+      const root = hex(8);
+      const ask = `Did the agent reveal ${secret.value}?`;
+      tb.roots.ingest([batch([
+        span({ traceId, spanId: root, name: "investigation privacy", kind: "workflow", attrs: [s("neatlogs.workflow.input", secret.value)] }),
+        llmSpan(traceId, root, { system: secret.value, user: secret.value, out: secret.value }),
+      ])]);
+      const chat = vi.spyOn(tb.roots.llm, "chat").mockResolvedValue({
+        json: { id: "investigation-question", ask }, text: "local draft fixture", model: "mock", latencyMs: 0,
+      });
+      const check = await draftCheckFromConcern(tb.roots, "Check credential disclosure");
+      expect(check.title).toBe(ask.slice(0, 80)); // actual draft producer clips the full question
+      tb.roots.checks.save(check, "db", "planner");
+      const finding = tb.roots.store.insertFinding({
+        trace_id: traceId, check_id: check.id, check_kind: "question", title: checkTitle(check), probability: 0.9,
+        status: "raised", evidence_span_ids: [root], detail: { backend: "mock" }, model: null, triage_score: null, explanation_id: null,
+      });
+      let title = "";
+      let evidence = "";
+      chat.mockImplementation(async (messages) => {
+        const prompt = messages.find((m) => m.role === "user")!.content as string;
+        // Echo ONLY what the actual investigate prompt provided, not a hand-clipped secret fixture.
+        title = prompt.slice("Finding: ".length, prompt.indexOf("\n\n"));
+        evidence = prompt.slice(prompt.indexOf("<run>\n") + "<run>\n".length, prompt.lastIndexOf("\n</run>"));
+        return { json: { cause: `Observed: ${title}`, fix: `Review this evidence: ${evidence}`, evidence: [] }, text: "local investigation fixture", model: "mock-investigator", latencyMs: 0 };
+      });
+      const engine = new Engine(tb.roots, tb.roots.llm, tb.roots.decisions, tb.roots.checks, tb.roots.steering);
+      vi.spyOn(engine, "grounding").mockResolvedValue(0.875); // no decision-provider calls
+      const explanation = (await engine.investigate(traceId, finding.id))!;
+      expect(title).toBe(check.title);
+      expect(evidence).toContain(`System prompt: ${secret.value.slice(0, 699)}…`);
+      expect(evidence).toContain(`User request: ${secret.value.slice(0, 499)}…`);
+      expect(evidence).toContain(`  input: ${secret.value.slice(0, 499)}…`);
+      expect(evidence).not.toContain(secret.marker === "private_key" ? "-----END RSA PRIVATE KEY-----" : ":CLIENT-END");
+      expect(explanation.cause).toBe(`Observed: ${title}`);
+      expect(explanation.fix).toBe(`Review this evidence: ${evidence}`);
+      expect(explanation.cause).toContain(secret.fragment.slice(0, 16));
+      expect(explanation.fix).toContain(secret.fragment);
+      const snapshot = () => ({
+        explanation: tb.roots.store.getExplanation(explanation.id), finding: tb.roots.store.getFinding(finding.id),
+        check: tb.roots.checks.get(check.id), spans: tb.roots.store.batchesForTraces([traceId]),
+      });
+      const before = structuredClone(snapshot());
+      const response = await fetch(`${tb.url}/api/runs/${traceId}/diagnostic-export`);
+      expect(response.status).toBe(200);
+      const prepared = await response.json();
+      const exportedFinding = prepared.bundle.findings[0];
+      const current = prepared.bundle.checks.current_definitions.find((c: { check_id: string }) => c.check_id === exportedFinding.check_id);
+      expect(current.definition.ask).toBe(`Did the agent reveal [redacted:${secret.marker}]?`);
+      expect(JSON.stringify(prepared.bundle.trace)).toContain(`[redacted:${secret.marker}]`);
+      expect(JSON.stringify(prepared)).not.toContain(secret.fragment.slice(0, 16));
+      expect(exportedFinding.explanation).toEqual({ evidence_span_ids: [root], grounding: 0.875, model: "mock-investigator", created_ms: explanation.created_ms });
+      expect(exportedFinding.explanation).not.toHaveProperty("cause");
+      expect(exportedFinding.explanation).not.toHaveProperty("fix");
+      expect(snapshot()).toEqual(before);
+    });
   }
 
   it("omits a failed-check error containing an actual client-clipped HTTP body", async () => {

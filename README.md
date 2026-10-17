@@ -173,7 +173,9 @@ neatlogs.init(workflow_name="refund-agent", flush_interval=0.5, instrumentations
   same built-in and configured custom redaction patterns as cloud forwarding. It exports recorded
   trace, finding and check data as stored, except where those existing patterns match. Already-clipped
   run previews, question titles, finding parameters, verification quotes and finding error messages
-  are omitted. Full current questions and trace evidence remain with redaction; check IDs and other
+  are omitted. Investigation cause/fix prose is also omitted because it may echo clipped titles or
+  evidence; explanation evidence IDs, grounding, model and timestamp remain. Full current questions
+  and trace evidence remain with redaction; check IDs and other
   metadata are retained. Check IDs are replaced consistently by opaque aliases within each export,
   including saved parameter keys and finding/decision references; original stored IDs are unchanged.
   Aliases use fresh randomness rather than content hashes, and cannot collide with original IDs.
