@@ -161,8 +161,8 @@ export function prepareDiagnosticExport(roots: Roots, traceId: string): Diagnost
     prompt_tokens: run.prompt_tokens,
     completion_tokens: run.completion_tokens,
     total_tokens: run.total_tokens,
-    input_preview: run.input_preview,
-    output_preview: run.output_preview,
+    // Stored previews are truncated before redaction and can lose a credential's
+    // closing delimiter. Export only the full, redacted values in trace instead.
     interrupted: !!run.interrupted,
     termination_reason: run.termination_reason,
   };

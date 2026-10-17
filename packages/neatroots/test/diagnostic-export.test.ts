@@ -21,6 +21,39 @@ async function sink(): Promise<{ url: string; requests: () => number }> {
 }
 
 describe("local diagnostic export", () => {
+  it("does not export credential fragments from truncated run previews", async () => {
+    const tb = await makeRoots({ serve: true, noEngine: true });
+    cleanup.push(tb.close);
+    const traceId = hex(16);
+    const fragment = "SyntheticPrivateKeyMaterial".repeat(30);
+    const secret = `-----BEGIN PRIVATE KEY-----\n${fragment}\n-----END PRIVATE KEY-----`;
+    tb.roots.ingest([batch([span({
+      traceId,
+      name: "credential preview regression",
+      kind: "workflow",
+      attrs: [s("neatlogs.workflow.input", secret), s("neatlogs.workflow.output", secret)],
+    })])]);
+    const storedRun = tb.roots.store.getRun(traceId)!;
+    for (const preview of [storedRun.input_preview, storedRun.output_preview]) {
+      expect(preview).toContain("SyntheticPrivateKeyMaterial");
+      expect(preview).not.toContain("-----END PRIVATE KEY-----");
+    }
+    const before = JSON.stringify(tb.roots.store.batchesForTraces([traceId]));
+
+    const response = await fetch(`${tb.url}/api/runs/${traceId}/diagnostic-export`);
+    expect(response.status).toBe(200);
+    const prepared = await response.json() as { bundle: { run: Record<string, unknown> } };
+    // The UI previews and downloads this entire bundle, not just its trace field.
+    const downloadedJson = JSON.stringify(prepared.bundle);
+    expect(downloadedJson).toContain("[redacted:private_key]");
+    expect(JSON.stringify(prepared)).not.toContain("SyntheticPrivateKeyMaterial");
+    expect(downloadedJson).not.toContain("-----BEGIN PRIVATE KEY-----");
+    expect(prepared.bundle.run).not.toHaveProperty("input_preview");
+    expect(prepared.bundle.run).not.toHaveProperty("output_preview");
+    expect(JSON.stringify(tb.roots.store.batchesForTraces([traceId]))).toBe(before);
+    expect(tb.roots.store.getRun(traceId)).toEqual(storedRun);
+  });
+
   it("redacts nested data with forwarding rules, preserves stored spans and never forwards", async () => {
     const receiver = await sink();
     const tb = await makeRoots({
