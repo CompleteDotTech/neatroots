@@ -90,7 +90,9 @@ is the expected level, not necessarily a whole number.
   Plans are cached per workflow and redone when new tools appear.
 - **You**: describe a concern in the app (Checks → New check) and the LLM drafts the question; preview
   it on recent runs before saving.
-- **Coding agents**: `create_check` and `preview_check` over MCP.
+- **Coding agents**: `create_check` and `preview_check` over MCP. Saved proposals appear in Checks for approval; `save=false` remains a draft only.
+
+MCP-created checks are inactive until a person approves them in the local Checks page. A pending edit does not change the active check; the existing version keeps running until approval, and rejection discards only the proposal. Approved checks retain their MCP origin in the Checks list. UI saves made by a person remain immediate; the existing CLI `checks` commands continue to list or validate files. Approve or reject the exact revision shown: if the proposal or current check changes, refresh and review again. Approval applies to that definition and target file; it is not a blanket grant for later agent edits.
 
 ## Findings
 

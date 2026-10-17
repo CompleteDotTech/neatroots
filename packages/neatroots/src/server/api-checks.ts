@@ -22,7 +22,7 @@ export function checkFromInput(input: unknown): { check?: Check; error?: string 
   return { check: parsed.data as Check };
 }
 
-/** Routes for checks: list, save, enable, draft from a concern, preview on past runs. */
+/** Routes for checks: list, immediate human save, MCP proposal approval/rejection, enable, draft, and preview. */
 export function mountChecksApi(app: Hono, roots: Roots): void {
   const engine = roots.engine;
 
@@ -36,7 +36,7 @@ export function mountChecksApi(app: Hono, roots: Roots): void {
         title: lc.check.title ?? (isQuestion(lc.check) ? lc.check.ask : lc.check.id),
         source: lc.source,
         path: lc.path,
-        enabled: lc.check.enabled !== false && (roots.store.checkStats()[lc.check.id]?.enabled ?? 1) === 1,
+        enabled: (lc.source !== "mcp" || roots.checks.isApprovedMcp(lc.check.id)) && lc.check.enabled !== false && (roots.store.checkStats()[lc.check.id]?.enabled ?? 1) === 1,
         precision: roots.checks.precision(lc.check.id),
         yaml: YAML.stringify(lc.check),
         check: lc.check,
@@ -45,6 +45,17 @@ export function mountChecksApi(app: Hono, roots: Roots): void {
       library_dir: roots.checks.libraryDir,
       user_dir: `${roots.home}/checks`,
       project_dirs: roots.config.checkDirs,
+      pending_mcp_checks: roots.checks.pendingMcp().map((proposal) => ({
+        id: proposal.check.id,
+        kind: proposal.check.kind,
+        title: proposal.check.title ?? (isQuestion(proposal.check) ? proposal.check.ask : proposal.check.id),
+        yaml: YAML.stringify(proposal.check),
+        check: proposal.check,
+        revision: proposal.revision,
+        created_ms: proposal.created_ms,
+        target_dir: proposal.target_dir,
+        has_active_version: proposal.has_active_version,
+      })),
     }),
   );
 
@@ -64,6 +75,31 @@ export function mountChecksApi(app: Hono, roots: Roots): void {
     }
     const saved = roots.checks.save(check, dir ? { dir } : "user");
     return c.json({ ok: true, id: saved.check.id, path: saved.path, source: saved.source, warnings: checkWarnings(check) });
+  });
+
+  app.post("/api/checks/:id/approve", async (c) => {
+    const b = await body<{ revision?: string }>(c);
+    if (typeof b.revision !== "string" || !b.revision) return err(c, 400, "proposal revision is required");
+    try {
+      const approved = roots.checks.approvePendingMcp(c.req.param("id"), b.revision);
+      if (!approved) return err(c, 404, "pending MCP check proposal not found");
+      return c.json({ ok: true, id: approved.check.id, path: approved.path, source: approved.source });
+    } catch (error) {
+      if ((error as Error).message.includes("changed;")) return err(c, 409, (error as Error).message);
+      throw error;
+    }
+  });
+
+  app.post("/api/checks/:id/reject", async (c) => {
+    const b = await body<{ revision?: string }>(c);
+    if (typeof b.revision !== "string" || !b.revision) return err(c, 400, "proposal revision is required");
+    try {
+      if (!roots.checks.rejectPendingMcp(c.req.param("id"), b.revision)) return err(c, 404, "pending MCP check proposal not found");
+      return c.json({ ok: true, id: c.req.param("id") });
+    } catch (error) {
+      if ((error as Error).message.includes("changed;")) return err(c, 409, (error as Error).message);
+      throw error;
+    }
   });
 
   app.post("/api/checks/:id/enabled", async (c) => {
