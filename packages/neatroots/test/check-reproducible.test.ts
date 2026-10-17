@@ -89,6 +89,12 @@ describe("reproducible offline checks", () => {
     };
     expect(() => recordOrVerifyCheckManifest(lock, changed)).toThrow(/differs from .*checks\.lock\.json/);
     expect(JSON.parse(fs.readFileSync(lock, "utf8"))).toEqual(firstJson.check_manifest);
+
+    fs.writeFileSync(path.join(checks, "rules.yaml"), repoRules.replace("never-matches", "now-matches"));
+    const drift = runCli(args, home);
+    expect(drift.status).toBe(2);
+    expect(drift.stderr).toMatch(/differs from .*checks\.lock\.json/);
+    expect(JSON.parse(fs.readFileSync(lock, "utf8"))).toEqual(firstJson.check_manifest);
   }, 90_000);
 
   it("requires repository directories and refuses paths outside the working tree", () => {
