@@ -2,6 +2,7 @@ import path from "node:path";
 import { rootsHome, loadConfig, saveConfig, type RootsConfig } from "./config.js";
 import { Bus } from "./bus.js";
 import { Store, type TraceUpdate } from "./store/db.js";
+import type { OtlpLogRecord } from "./otlp/codec.js";
 import type { ResourceSpansBatch } from "./otlp/types.js";
 import { LlmClient } from "./models/llm.js";
 import { DecisionModel } from "./models/decision.js";
@@ -79,6 +80,12 @@ export class Roots {
     const updates = this.store.ingest(batches);
     for (const u of updates) this.bus.emit("trace", u);
     return updates;
+  }
+
+  ingestLogs(records: OtlpLogRecord[]): number {
+    return this.store.ingestLogs(records, (updates) => {
+      for (const u of updates) this.bus.emit("trace", u);
+    });
   }
 
   /** Saves to this instance's own home (the one it was opened with), never another one. */

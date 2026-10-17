@@ -71,6 +71,8 @@ interface LiveRun {
   used: { plans: number; investigations: number; notes: number; summaries: number };
   deferred: (() => Promise<void>)[];
   spanDone: Set<string>;
+  spanEvidence: Map<string, string>;
+  contentRevision: number;
   /** Per span-scope check: spans waiting to be asked about, newest last. */
   spanQueue: Map<string, string[]>;
   spanBusy: Set<string>;
@@ -254,6 +256,8 @@ export class Engine {
       used: { plans: 0, investigations: 0, notes: 0, summaries: 0 },
       deferred: [],
       spanDone: new Set(),
+      spanEvidence: new Map(),
+      contentRevision: 0,
       spanQueue: new Map(),
       spanBusy: new Set(),
       spanAsked: new Map(),
@@ -275,6 +279,17 @@ export class Engine {
     if (!run) return;
     if (run.doctor) {
       this.live.delete(u.traceId);
+      return;
+    }
+    if (u.contentUpdated) {
+      run.contentRevision++;
+      run.ended ||= this.roots.store.getRun(u.traceId)?.root_ended === 1;
+      const ids = u.spans.map((s) => s.row.span_id);
+      for (const { check } of this.questionsFor(run)) {
+        run.answered?.traceChecks.delete(check.id);
+        for (const id of ids) run.spanDone.delete(`${check.id}:${id}`);
+      }
+      this.track(u.traceId, this.handleContentUpdate(run, ids));
       return;
     }
     const fresh = u.spans.filter((s) => s.isNew && !s.view.isMarker);
@@ -328,17 +343,29 @@ export class Engine {
     if (run.plan) this.scheduleQuestions(run, snap, fresh);
   }
 
-  private scheduleQuestions(run: LiveRun, snap: TraceSnapshot, fresh: SpanInfo[]): void {
+  private async handleContentUpdate(run: LiveRun, ids: string[]): Promise<void> {
+    const snap = loadTrace(this.roots.store, run.traceId);
+    this.applyRules(run, snap, run.ended, new Set(ids));
+    this.ensurePlan(run, snap);
+    if (run.planning) await run.planning;
+    this.scheduleQuestions(run, loadTrace(this.roots.store, run.traceId), snap.spans.filter((s) => ids.includes(s.id)), run.ended);
+  }
+
+  private scheduleQuestions(run: LiveRun, snap: TraceSnapshot, fresh: SpanInfo[], includeEnd = false): void {
     for (const { check, params } of this.questionsFor(run)) {
-      if (check.when === "end") continue;
+      if (check.when === "end" && !includeEnd) continue;
       const sel = check.evidence?.spans;
       if (check.scope === "span") {
         const queue = run.spanQueue.get(check.id) ?? [];
         for (const s of fresh) {
           const key = `${check.id}:${s.id}`;
           if (run.spanDone.has(key) || !matchesSelector(s, sel)) continue;
+          if (run.spanEvidence.get(key) === buildEvidence(snap, check.evidence, { focus: s }).text) {
+            run.spanDone.add(key);
+            continue;
+          }
           run.spanDone.add(key);
-          queue.push(s.id);
+          if (!queue.includes(s.id)) queue.push(s.id);
         }
         run.spanQueue.set(check.id, queue);
         if (queue.length) void this.track(run.traceId, this.drainSpanQueue(run, check, params));
@@ -456,7 +483,8 @@ export class Engine {
       } else if (open && hit && !hit.firing) {
         // A streak that ended still happened, so its halt stands. A requires_before whose earlier
         // call arrived late never happened at all, so its halt is withdrawn too.
-        this.resolve(open, { keepHalts: rule.rule.type !== "requires_before" });
+        const disproven = rule.rule.type === "requires_before" || (rule.rule.type === "run_end" && rule.rule.when === "no_output");
+        this.resolve(open, { keepHalts: !disproven });
       }
     }
   }
@@ -498,6 +526,7 @@ export class Engine {
     const span = snap.spans.find((s) => s.id === spanId);
     if (!span) return;
     const ev = buildEvidence(snap, check.evidence, { focus: span });
+    run.spanEvidence.set(`${check.id}:${spanId}`, ev.text);
     const outcome = await this.decideAndApply(run, check, params, ev.text, ev.spanIds, snap, spanId);
     // The model call failed (a timeout or dropped connection lands here too): run end tries once more.
     if (outcome === "unavailable" && !run.endHandled) {
@@ -511,7 +540,7 @@ export class Engine {
     if (run.answered?.traceChecks.has(check.id)) return;
     const ev = buildEvidence(snap, check.evidence);
     if (!ev.spanIds.length && !check.evidence?.final_output) return;
-    const key = ev.spanIds.join(",") + (check.evidence?.final_output ? `|${finalOutput(snap) ?? ""}` : "");
+    const key = JSON.stringify([ev.spanIds, ev.text]);
     if (run.traceEvidence.get(check.id) === key) return;
     run.traceEvidence.set(check.id, key);
     const outcome = await this.decideAndApply(run, check, params, ev.text, ev.spanIds, snap, null);
@@ -528,11 +557,20 @@ export class Engine {
     snap: TraceSnapshot,
     spanId: string | null,
   ): Promise<"unavailable" | void> {
+    const revision = run.contentRevision;
+    const current = () => {
+      if (revision === run.contentRevision) return true;
+      const latest = loadTrace(this.roots.store, run.traceId);
+      const focus = spanId ? latest.spans.find((s) => s.id === spanId) : undefined;
+      return buildEvidence(latest, check.evidence, focus ? { focus } : {}).text === evidence;
+    };
     let result: DecisionResult;
     try {
       result = await this.decisions.decide(evidence, [toQuestion(check, params)]);
       this.decisionDown = false;
+      if (!current()) return;
     } catch (err) {
+      if (!current()) return;
       if (err instanceof DecisionUnavailableError || err instanceof LlmUnavailableError) {
         if (!this.decisionDown) log.warn(`questions skipped: ${(err as Error).message}`);
         this.decisionDown = true;
@@ -587,6 +625,7 @@ export class Engine {
       // A second look, with a quote that must be in the run, before anything is raised.
       if ((run.rejected.get(check.id) ?? 0) >= 3) return;
       const check2 = check.kind === "yes_no" ? await verifyFlag(this.llm, fillTemplate(check.ask, params) || check.ask, evidence) : undefined;
+      if (!current()) return;
       if (check2 && !check2.verified) {
         run.rejected.set(check.id, (run.rejected.get(check.id) ?? 0) + 1);
         log.debug(`${check.id}: flag not confirmed on a second look${check2.quote ? ` (quote: ${clip(check2.quote, 80)})` : ""}`);
@@ -1034,7 +1073,7 @@ ${library}`;
           const key = `${check.id}:${s.id}`;
           if (run.spanDone.has(key)) continue;
           run.spanDone.add(key);
-          queue.push(s.id);
+          if (!queue.includes(s.id)) queue.push(s.id);
         }
         run.spanQueue.set(check.id, queue);
         await this.drainSpanQueue(run, check, params);
@@ -1181,7 +1220,8 @@ ${library}`;
       checked++;
       if (isRule(check)) {
         const hit = evaluateRule(check, snap, true);
-        if (hit) hits.push({ trace_id: r.trace_id, probability: null, evidence_span_ids: hit.evidenceSpanIds, root_name: r.root_name });
+        const disprovenOutput = check.rule.type === "run_end" && check.rule.when === "no_output" && !hit?.firing;
+        if (hit && !disprovenOutput) hits.push({ trace_id: r.trace_id, probability: null, evidence_span_ids: hit.evidenceSpanIds, root_name: r.root_name });
         continue;
       }
       const targets = check.scope === "span" ? selectSpans(snap.spans, check.evidence?.spans).slice(-5) : [undefined];

@@ -3,7 +3,8 @@ import { finalOutput, selectSpans, type SpanInfo, type TraceSnapshot } from "../
 import { preview } from "../semantics/view.js";
 
 export interface RuleHit {
-  /** Whether the condition holds now, looking at the latest spans. */
+  /** Whether the condition holds now. A false run_end/no_output hit disproves the missing-answer
+   * state; other false hits can retain evidence of a real historical loop or error streak. */
   firing: boolean;
   evidenceSpanIds: string[];
   params: Record<string, string>;
@@ -94,7 +95,8 @@ function matchTexts(v: unknown): string[] {
  * Evaluates one rule against a trace. Returns null when the rule has never held in this
  * trace; otherwise `firing` says whether it still holds for the newest spans, which is how
  * a finding later resolves. `fresh` names the spans that just arrived: a streak they complete
- * fires even if a later span in the same batch already ended it.
+ * fires even if a later span in the same batch already ended it. A nonfiring run_end/no_output
+ * result is state-only: a late answer disproves it and must not count as a historical failure.
  */
 export function evaluateRule(check: RuleCheck, t: TraceSnapshot, atEnd: boolean, fresh?: ReadonlySet<string>): RuleHit | null {
   const r = check.rule;
@@ -316,6 +318,8 @@ export function evaluateRule(check: RuleCheck, t: TraceSnapshot, atEnd: boolean,
         const out = finalOutput(t);
         const empty = !out || /^("?\s*"?|null|\{\}|\[\])$/.test(out.trim());
         if (empty && t.run.status !== "error") return { firing: true, evidenceSpanIds: [root.id], params: {} };
+        // Exporters may send message logs after run-end; a recorded answer disproves this finding.
+        if (!empty) return { firing: false, evidenceSpanIds: [root.id], params: {} };
       }
       return null;
     }
