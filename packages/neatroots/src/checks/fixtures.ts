@@ -91,7 +91,7 @@ function ensureInputs(manifestPath: string, manifest: z.infer<typeof Manifest>):
   const fixturePaths = new Map<string, string>();
   for (const fixture of manifest.fixtures) {
     const tracePath = path.resolve(base, fixture.trace);
-    if (!fs.statSync(tracePath).isFile()) throw new Error(`fixture ${fixture.id}: trace path is not a file: ${fixture.trace}`);
+    if (!fs.statSync(tracePath, { throwIfNoEntry: false })?.isFile()) throw new Error(`fixture ${fixture.id}: trace path is not a file: ${fixture.trace}`);
     fixturePaths.set(fixture.id, tracePath);
   }
   return { checkDir, fixturePaths };

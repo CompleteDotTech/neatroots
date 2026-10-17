@@ -97,9 +97,12 @@ describe("check fixture suites", () => {
     try {
       expect(testCheckFixtures(s.manifest)).toMatchObject({
         exit_code: 0,
+        errors: [],
         fixtures: [{ actual: ["detect-marker"] }],
       });
-      expect(() => checkFiles([path.join(s.traces, "hit.json")], { dirs: [s.checks], only: ["detect-marker"] })).toThrow();
+      const ordinary = checkFiles([path.join(s.traces, "hit.json")], { dirs: [s.checks], only: ["detect-marker"] });
+      expect(ordinary.errors).toContain(`${path.join(home, "checks", "draft.yaml")}: EISDIR`);
+      expect(ordinary.runs[0].findings.map((finding) => finding.check_id)).toEqual(["detect-marker"]);
     } finally {
       vi.unstubAllEnvs();
     }
@@ -116,8 +119,9 @@ describe("check fixture suites", () => {
       return Reflect.apply(read, fs, args);
     });
     try {
-      expect(testCheckFixtures(s.manifest)).toMatchObject({ exit_code: 0, fixtures: [{ actual: ["detect-marker"] }] });
-      expect(() => checkFiles([path.join(s.traces, "hit.json")])).toThrow("library access denied");
+      expect(testCheckFixtures(s.manifest)).toMatchObject({ exit_code: 0, errors: [], fixtures: [{ actual: ["detect-marker"] }] });
+      const ordinary = checkFiles([path.join(s.traces, "hit.json")]);
+      expect(ordinary.errors).toContain(`${path.join(library, "rules.yaml")}: EACCES`);
     } finally {
       spy.mockRestore();
     }
@@ -228,7 +232,19 @@ describe("check fixture suites", () => {
     const missingTrace = suite("missing-trace", {
       fixtures: [{ id: "missing", trace: "./traces/nope.json", expected: [] }],
     });
-    expect(testCheckFixtures(missingTrace.manifest).exit_code).toBe(2);
+    const entriesBefore = fs.readdirSync(missingTrace.root, { recursive: true }).sort();
+    const expectedError = "fixture missing: trace path is not a file: ./traces/nope.json";
+    const expectedReport = { exit_code: 2, status: "error", fixtures: [], errors: [expectedError] };
+    expect(testCheckFixtures(missingTrace.manifest)).toMatchObject(expectedReport);
+    const missingJson = cli(missingTrace.manifest, { json: true });
+    expect(missingJson.status).toBe(2);
+    expect(JSON.parse(missingJson.stdout)).toMatchObject(expectedReport);
+    const missingHuman = cli(missingTrace.manifest);
+    expect(missingHuman.status).toBe(2);
+    expect(missingHuman.stdout).toContain(expectedError);
+    expect(missingHuman.stdout).not.toContain("ENOENT");
+    expect(fs.readdirSync(missingTrace.root, { recursive: true }).sort()).toEqual(entriesBefore);
+    expect(fs.existsSync(path.join(missingTrace.traces, "nope.json"))).toBe(false);
 
     const badTrace = suite("bad-trace", {
       fixtures: [{ id: "bad", trace: "./traces/bad.json", expected: [] }],
