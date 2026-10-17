@@ -7,6 +7,7 @@ import YAML from "yaml";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { formatFixtureReport, testCheckFixtures } from "../src/checks/fixtures.js";
 import { checkFiles } from "../src/checks/offline.js";
+import * as regex from "../src/util/regex.js";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "neatroots-check-fixtures-"));
 afterAll(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -89,6 +90,19 @@ function cli(manifest: string, options: { json?: boolean; home?: string } = {}) 
 }
 
 describe("check fixture suites", () => {
+  it("runs fixture-supplied patterns through the bounded regex evaluator", () => {
+    const sample = suite("bounded-regex");
+    const bounded = vi.spyOn(regex, "testWithin");
+    try {
+      const report = testCheckFixtures(sample.manifest);
+      expect(report.status).toBe("passed");
+      expect(bounded).toHaveBeenCalled();
+      expect(bounded.mock.calls.every(([pattern, , timeout]) => pattern.source === "marker" && timeout === 50)).toBe(true);
+    } finally {
+      bounded.mockRestore();
+    }
+  });
+
   it("ignores a personal YAML-named directory while ordinary offline checks still load personal sources", () => {
     const s = suite("ambient-directory");
     const home = path.join(dir, "ambient-directory-home");
