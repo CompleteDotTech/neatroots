@@ -29,4 +29,4 @@ Then open http://localhost:4100. To run them all and check each produced a run:
 | [browser](browser) | HTML + JS | Neatlogs HTTP trace API from the browser | A chat widget sending traces |
 | [import-files](import-files) | files | `neatroots import` or Add data → Import files | An OpenInference OTLP JSON trace and Neatlogs HTTP traces as JSONL |
 | [refund-agent](refund-agent) | Python | Neatlogs SDK + steering hook | Steering: neatroots adds a note to the agent's next LLM call |
-| [samples](samples) | Python | Neatlogs SDK | Eight scripted scenarios: six failures (loops, ignored errors, prompt injection, leaks, and contradictions) and two healthy controls (`happy` and `long-request`). |
+| [samples](samples) | Python | Neatlogs SDK | Eight scripted scenarios: six failures (loops, ignored errors, prompt injection, leaks, contradictions) and two healthy controls |
