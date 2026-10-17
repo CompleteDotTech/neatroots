@@ -17,6 +17,74 @@ afterEach(() => {
 });
 
 describe("FTS row identity", () => {
+  it("uses the current rowid when a second Store replaces a selected reindex row", async () => {
+    const st = store();
+    const original = toolSpan(hex(16), "", "lookup", "{}", "oldneedle");
+    st.ingest([batch([original])]);
+    const writer = trackedStore(st.dir);
+    const changed = toolSpan(original.traceId, "", "lookup", "{}", "newneedle");
+    changed.spanId = original.spanId;
+    const prepare = st.db.prepare.bind(st.db);
+    let replaced = false;
+    vi.spyOn(st.db, "prepare").mockImplementation((sql) => {
+      const statement = prepare(sql);
+      if (sql.includes("WHERE seq > ? ORDER BY seq LIMIT 300")) {
+        const all = statement.all.bind(statement);
+        vi.spyOn(statement, "all").mockImplementation((...args: unknown[]) => {
+          const rows = all(...args);
+          if (!replaced && rows.length) {
+            replaced = true;
+            writer.ingest([batch([changed])]);
+          }
+          return rows;
+        });
+      }
+      return statement;
+    });
+    await new Promise<number>((resolve) => st.reindexSearch(resolve));
+    expect(replaced).toBe(true);
+    expect(st.searchSpans("oldneedle")).toEqual([]);
+    expect(st.searchSpans("newneedle")).toHaveLength(1);
+    expect(st.db.prepare("SELECT rowid FROM span_fts").all()).toEqual(st.db.prepare("SELECT rowid FROM spans").all());
+  });
+
+  it.each(["replacement", "marker"])("serializes a concurrent %s after reading the reindex payload", async (transition) => {
+    const st = store();
+    const original = toolSpan(hex(16), "", "lookup", "{}", "oldneedle");
+    st.ingest([batch([original])]);
+    const writer = trackedStore(st.dir);
+    writer.db.pragma("busy_timeout = 0");
+    const changed = transition === "marker" ? markerSpan(original.traceId, "") : toolSpan(original.traceId, "", "lookup", "{}", "newneedle");
+    changed.spanId = original.spanId;
+    const read = st.getOtlpSpan.bind(st);
+    let attempted = false;
+    let blocked = false;
+    let retry: Promise<void> | undefined;
+    vi.spyOn(st, "getOtlpSpan").mockImplementation((trace, span) => {
+      const payload = read(trace, span);
+      if (!attempted) {
+        attempted = true;
+        try { writer.ingest([batch([changed])]); }
+        catch (error) {
+          if ((error as { code?: string }).code !== "SQLITE_BUSY") throw error;
+          blocked = true;
+          retry = new Promise((resolve, reject) => setImmediate(() => {
+            try { writer.ingest([batch([changed])]); resolve(); } catch (e) { reject(e); }
+          }));
+        }
+      }
+      return payload;
+    });
+    await new Promise<number>((resolve) => st.reindexSearch(resolve));
+    await retry;
+    expect(attempted).toBe(true);
+    expect(st.searchSpans("oldneedle")).toEqual([]);
+    expect(st.searchSpans("newneedle")).toHaveLength(transition === "marker" ? 0 : 1);
+    expect(blocked).toBe(true);
+    const orphans = st.db.prepare("SELECT f.rowid FROM span_fts f LEFT JOIN spans s ON f.rowid = s.rowid AND f.trace_id = s.trace_id AND f.span_id = s.span_id WHERE s.rowid IS NULL OR s.is_marker = 1").all();
+    expect(orphans).toEqual([]);
+  });
+
   it("uses rowid lookups for new spans and replacements, and removes marker transitions", () => {
     const st = store();
     const prepare = vi.spyOn(st.db, "prepare");

@@ -1490,17 +1490,24 @@ export class Store {
     if (this.getMeta("search_index") === String(SEARCH_INDEX_VERSION)) return;
     let after = 0;
     let n = 0;
+    const indexCurrent = this.db.transaction((traceId: string, spanId: string) => {
+      const current = this.db.prepare("SELECT rowid AS search_id FROM spans WHERE trace_id = ? AND span_id = ?").get(traceId, spanId) as { search_id: number } | undefined;
+      if (!current) return;
+      const full = this.getOtlpSpan(traceId, spanId);
+      if (!full) return;
+      const view = buildView(full.span, full.resource.attributes);
+      if (view.isMarker) return;
+      this.indexSpan(current.search_id, traceId, spanId, full.span.name, view);
+      n++;
+    });
     const step = () => {
       if (!this.db.open) return;
-      const rows = this.db.prepare("SELECT rowid AS search_id, seq, trace_id, span_id FROM spans WHERE seq > ? ORDER BY seq LIMIT 300").all(after) as { search_id: number; seq: number; trace_id: string; span_id: string }[];
+      const rows = this.db.prepare("SELECT seq, trace_id, span_id FROM spans WHERE seq > ? ORDER BY seq LIMIT 300").all(after) as { seq: number; trace_id: string; span_id: string }[];
       for (const r of rows) {
         after = r.seq;
-        const full = this.getOtlpSpan(r.trace_id, r.span_id);
-        if (!full) continue;
-        const view = buildView(full.span, full.resource.attributes);
-        if (view.isMarker) continue;
-        this.indexSpan(r.search_id, r.trace_id, r.span_id, full.span.name, view);
-        n++;
+        // Reserve the writer before reading: another Store may have replaced the selected row.
+        // Keep the lock to one span, including payload hydration and its rowid-based FTS write.
+        indexCurrent.immediate(r.trace_id, r.span_id);
       }
       if (rows.length) setImmediate(step);
       else {
