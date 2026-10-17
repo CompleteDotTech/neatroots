@@ -20,6 +20,7 @@ Steering is opt-in per project in neatroots (neatroots steering advisory --proje
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import functools
 import inspect
@@ -311,11 +312,16 @@ def _wrap_method(
             return kwargs
         return transform(dict(kwargs), note)
 
-    if inspect.iscoroutinefunction(original):
+    # SDK validation decorators preserve __wrapped__ but may hide the coroutine.
+    if inspect.iscoroutinefunction(original) or inspect.iscoroutinefunction(inspect.unwrap(original)):
 
         @functools.wraps(original)
         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
-            return await original(*args, **prepare(kwargs))
+            # to_thread copies ContextVars, including the active trace, while
+            # flush/claim wait off-loop. Cancellation prevents the model call;
+            # an already running synchronous claim still finishes in its thread.
+            prepared = await asyncio.to_thread(prepare, kwargs)
+            return await original(*args, **prepared)
 
         async_wrapper.__neatroots_wrapped__ = True  # type: ignore[attr-defined]
         setattr(owner, name, async_wrapper)
