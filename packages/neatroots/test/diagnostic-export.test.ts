@@ -188,6 +188,7 @@ describe("local diagnostic export", () => {
     cleanup.push(tb.close);
     const traceId = hex(16);
     tb.roots.ingest([batch([span({ traceId, name: "clean agent", kind: "workflow" })], "diagnostic-app")]);
+    const expectedExistingRules = tb.roots.checks.rules().map(({ check }) => ({ ...check, id: expect.any(String) }));
     const applicable = {
       id: "diagnostics.current-applicable",
       kind: "rule" as const,
@@ -195,8 +196,8 @@ describe("local diagnostic export", () => {
       rule: { type: "count" as const, at_least: 99 },
     };
     tb.roots.checks.save(applicable, "db", "planner");
-    tb.roots.checks.save({ ...applicable, id: "diagnostics.other-project", applies_to: { project: "other-app" } }, "db", "planner");
-    tb.roots.checks.save({ ...applicable, id: "diagnostics.disabled", enabled: false }, "db", "planner");
+    tb.roots.checks.save({ ...applicable, id: "diagnostics.other-project", applies_to: { project: "other-app" }, rule: { type: "count", at_least: 100 } }, "db", "planner");
+    tb.roots.checks.save({ ...applicable, id: "diagnostics.disabled", enabled: false, rule: { type: "count", at_least: 101 } }, "db", "planner");
 
     const response = await fetch(`${tb.url}/api/runs/${traceId}/diagnostic-export`);
     expect(response.status).toBe(200);
@@ -206,20 +207,20 @@ describe("local diagnostic export", () => {
         checks: {
           historical: { plan_available: boolean; recorded_check_ids: string[]; historical_definitions: string };
           decisions: unknown[];
-          current_definitions: { check_id: string; enabled_now: boolean; currently_applicable_rule: boolean }[];
+          current_definitions: { check_id: string; enabled_now: boolean; currently_applicable_rule: boolean; definition: Record<string, unknown> }[];
         };
       };
-      preview: { finding_count: number; check_count: number };
+      preview: { span_count: number; finding_count: number; check_count: number };
     };
 
     expect(bundle.findings).toEqual([]);
     expect(bundle.checks.decisions).toEqual([]);
     expect(bundle.checks.historical).toMatchObject({ plan_available: false, recorded_check_ids: [], historical_definitions: "not-retained" });
-    expect(bundle.checks.current_definitions).toEqual(expect.arrayContaining([
-      expect.objectContaining({ enabled_now: true, currently_applicable_rule: true, definition: expect.objectContaining({ applies_to: { project: "diagnostic-app" } }) }),
-    ]));
-    expect(JSON.stringify(bundle.checks.current_definitions)).not.toContain("other-app");
-    expect(bundle.checks.current_definitions.every((d) => d.enabled_now)).toBe(true);
-    expect(preview).toMatchObject({ finding_count: 0, check_count: bundle.checks.current_definitions.length });
+    const expectedDefinitions = [...expectedExistingRules, { ...applicable, id: expect.any(String) }];
+    // Compare complete rule shapes and exact membership; opaque IDs alone cannot identify rules.
+    expect(bundle.checks.current_definitions).toHaveLength(expectedDefinitions.length);
+    expect(bundle.checks.current_definitions.map((d) => d.definition)).toEqual(expect.arrayContaining(expectedDefinitions));
+    expect(bundle.checks.current_definitions.every((d) => d.enabled_now && d.currently_applicable_rule)).toBe(true);
+    expect(preview).toEqual({ span_count: 1, finding_count: 0, check_count: expectedExistingRules.length + 1 });
   });
 });

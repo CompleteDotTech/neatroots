@@ -3,11 +3,11 @@ import { randomBytes } from "node:crypto";
 import type { Roots } from "../core.js";
 import { isQuestion, type Check } from "../checks/types.js";
 import type { ResourceSpansBatch } from "../otlp/types.js";
-import { compileRules, redactBatches, redactString, type RedactionHit, type RedactionRule } from "../relay/redact.js";
+import { compileRules, redactBatches, redactString, type RedactionRule } from "../relay/redact.js";
 import type { Finding } from "../types.js";
 import { VERSION } from "../version.js";
 import { err } from "./util.js";
-import { checkDiagnosticSource, DIAGNOSTIC_JSON_LIMIT, DIAGNOSTIC_SOURCE_LIMIT, DiagnosticExportTooLarge, jsonBudget } from "./diagnostic-export-budget.js";
+import { checkDiagnosticSource, DIAGNOSTIC_JSON_LIMIT, DiagnosticExportTooLarge, DiagnosticRedactionBudget, jsonBudget } from "./diagnostic-export-budget.js";
 
 const FORMAT = "neatroots.diagnostic-export";
 const SCHEMA_VERSION = 1;
@@ -48,19 +48,20 @@ export interface DiagnosticExportResponse {
   preview: { span_count: number; finding_count: number; check_count: number };
 }
 
-function redactTree(value: unknown, rules: RedactionRule[], path: string, hits: RedactionHit[], safeAliases: Set<string>): unknown {
-  if (typeof value === "string") return safeAliases.has(value) ? value : redactString(value, rules, path, hits);
-  if (Array.isArray(value)) return value.map((item, index) => redactTree(item, rules, `${path}[${index}]`, hits, safeAliases));
+function redactTree(value: unknown, rules: RedactionRule[], path: string, budget: DiagnosticRedactionBudget, safeAliases: Set<string>, depth = 0): unknown {
+  budget.node(depth);
+  if (typeof value === "string") return safeAliases.has(value) ? value : redactString(value, rules, "", [], budget);
+  if (Array.isArray(value)) return value.map((item, index) => redactTree(item, rules, `${path}[${index}]`, budget, safeAliases, depth + 1));
   if (!value || typeof value !== "object") return value;
 
   const output: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   let keyIndex = 0;
   for (const [key, item] of Object.entries(value)) {
-    const proposed = safeAliases.has(key) || STRUCTURAL_KEYS.has(key) ? key : redactString(key, rules, `${path}.key`, hits);
+    const proposed = safeAliases.has(key) || STRUCTURAL_KEYS.has(key) ? key : redactString(key, rules, "", [], budget);
     let safeKey = proposed;
     let collision = 1;
     while (Object.hasOwn(output, safeKey)) safeKey = `${proposed} [${++collision}]`;
-    output[safeKey] = redactTree(item, rules, `${path}[${keyIndex++}]`, hits, safeAliases);
+    output[safeKey] = redactTree(item, rules, `${path}[${keyIndex++}]`, budget, safeAliases, depth + 1);
   }
   return output;
 }
@@ -79,8 +80,20 @@ function otlpJson(batches: ResourceSpansBatch[]): { resourceSpans: unknown[] } {
   };
 }
 
+export function createCheckAliases(ids: readonly string[], prefix: string): Map<string, string> {
+  const occupied = new Set(ids);
+  const aliases = new Map<string, string>();
+  let ordinal = 0;
+  for (const id of occupied) {
+    let alias: string;
+    do { alias = `${prefix}-${++ordinal}`; } while (occupied.has(alias));
+    aliases.set(id, alias);
+  }
+  return aliases;
+}
+
 function exportCheck(check: Check, alias: string): Record<string, unknown> {
-  if (!isQuestion(check)) return { ...check, id: alias };
+  if (!isQuestion(check)) return { ...check, id: alias, ...(check.title === check.id ? { title: alias } : {}) };
   // Planner/draft titles may be prefixes of ask with a credential delimiter lost.
   // Keep the full ask for redaction; do not infer a historical title from it.
   const { title: _title, ...definition } = check;
@@ -120,7 +133,7 @@ function exportFinding(roots: Roots, finding: Finding, alias: string): Record<st
 }
 
 export function prepareDiagnosticExport(roots: Roots, traceId: string): DiagnosticExportResponse | undefined {
-  const sourceBytes = checkDiagnosticSource(roots, traceId);
+  checkDiagnosticSource(roots, traceId);
   const run = roots.store.getRun(traceId);
   if (!run) return undefined;
 
@@ -147,14 +160,9 @@ export function prepareDiagnosticExport(roots: Roots, traceId: string): Diagnost
   ])].sort();
   // No original-ID lookup table is exported: IDs can contain transformed credentials.
   const prefix = `check-${randomBytes(8).toString("hex")}`;
-  const aliases = new Map(relevantIds.map((id, i) => [id, `${prefix}-${i + 1}`]));
-  let definitionBytes = sourceBytes;
+  const aliases = createCheckAliases(relevantIds, prefix);
   const currentDefinitions = relevantIds.map((id) => {
     const current = roots.checks.get(id);
-    if (current) {
-      definitionBytes += jsonBudget(current.check, DIAGNOSTIC_SOURCE_LIMIT);
-      if (definitionBytes > DIAGNOSTIC_SOURCE_LIMIT) throw new DiagnosticExportTooLarge();
-    }
     return {
       check_id: aliases.get(id)!,
       available: !!current,
@@ -167,8 +175,8 @@ export function prepareDiagnosticExport(roots: Roots, traceId: string): Diagnost
 
   const rawBatches = roots.store.batchesForTraces([traceId]);
   const rules = compileRules(roots.config.cloud.redactPatterns);
-  const trace = redactBatches(rawBatches, rules);
-  const hits = [...trace.hits];
+  const budget = new DiagnosticRedactionBudget();
+  const trace = redactBatches(rawBatches, rules, budget);
   const exportedRun = {
     trace_id: run.trace_id,
     session_id: run.session_id,
@@ -229,10 +237,8 @@ export function prepareDiagnosticExport(roots: Roots, traceId: string): Diagnost
     },
   };
 
-  const sanitized = redactTree(rawBundle, rules, "bundle", hits, new Set(aliases.values())) as typeof rawBundle;
-  const counts = new Map<string, number>();
-  for (const hit of hits) counts.set(hit.kind, (counts.get(hit.kind) ?? 0) + 1);
-  sanitized.redactions.matches = [...counts.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([kind, count]) => ({ kind, count }));
+  const sanitized = redactTree(rawBundle, rules, "bundle", budget, new Set(aliases.values())) as typeof rawBundle;
+  sanitized.redactions.matches = [...budget.counts.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([kind, count]) => ({ kind, count }));
 
   const response = {
     bundle: sanitized,

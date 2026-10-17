@@ -176,8 +176,13 @@ neatlogs.init(workflow_name="refund-agent", flush_interval=0.5, instrumentations
   are omitted. Full current questions and trace evidence remain with redaction; check IDs and other
   metadata are retained. Check IDs are replaced consistently by opaque aliases within each export,
   including saved parameter keys and finding/decision references; original stored IDs are unchanged.
-  Exports above a conservative 2 MiB source-data budget or 4 MiB JSON budget are refused before
-  large payloads are hydrated or a response is serialized. The preview renders at most 32 Ki
+  Aliases use fresh randomness rather than content hashes, and cannot collide with original IDs.
+  Exports above a conservative 2 MiB source-data budget or 4 MiB compact JSON budget are refused before
+  large payloads are hydrated or a response is serialized. Redaction additionally refuses more than
+  10,000 matches, 64 MiB of cumulative intermediate UTF-8 output, or 50,000 visited nodes/depth 64
+  across trace and metadata passes; these conservative work limits can refuse smaller inputs too.
+  Matching is incremental and retains counts rather than per-match samples. These limits do not
+  time-limit an individual regex evaluation. Refusal produces no partial bundle. The preview renders at most 32 Ki
   characters; downloading an accepted export retains its complete sanitized JSON.
   It does not gather extra environment or machine state. Nothing is uploaded
   automatically, and pattern matches cannot guarantee every sensitive value is removed. Currently
