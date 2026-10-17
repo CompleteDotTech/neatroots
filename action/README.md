@@ -21,16 +21,16 @@ expanded. `only` is passed as comma-separated rule IDs.
 Linux and macOS are supported. Replace `FULL_ACTION_COMMIT_SHA` with the reviewed
 commit that contains this action. Node 24.14.1 is set up first. The bundled
 `install.sh` builds the exact public source commit recorded in `source.json`
-(`32902856738fe386ba2d4b495d7b3af29f8e84bf` initially), with no service,
+(`9fe36a7dce4b82d62d29e6311ca73a7f6fe46e45`), with no service,
 coding-agent connection, model download or profile edits. The isolated installation
 is cached by full source commit, installer/helper digest, Node version, OS and CPU.
 The installer environment is controlled; ambient source/bundle/repository settings
 cannot replace the pinned source. Source is fetched by SHA before invoking the
 installer because its `git clone --branch` mode cannot fetch a raw commit ID.
 
-The published v0.2.8 bundle does not contain `neatroots check`, despite the current
-source manifest having that version. This action deliberately pins a source build
-instead of installing that incompatible release or requiring a future release.
+The v0.2.8 bundle lacked `neatroots check`. This action retains its tested source
+installation design and pins a reviewed commit containing the CLI and current
+security fixes, independently of release availability.
 
 Installation downloads public Git source, pinned pnpm and lockfile dependencies,
 and builds the app. Checking itself uses
