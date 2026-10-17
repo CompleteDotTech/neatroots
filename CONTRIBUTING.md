@@ -81,10 +81,10 @@ In another terminal at the repository root:
 NEATROOTS_BIN="node $PWD/packages/neatroots/dist/cli.js" sh examples/run-all.sh
 ```
 
-The runner needs `uv`, Node.js, `python3`, and `curl`, and starts a mock LLM if needed.
-Use a checkout path without spaces: the runner splits `NEATROOTS_BIN` into arguments.
-If port 4100 is occupied, start the server with `NEATROOTS_PORT=4101` and run the examples
-with `NEATROOTS_URL=http://localhost:4101`. Examples use mocks unless `REAL_LLM=1` is set.
+The runner needs `uv`, Node.js, `python3`, and `curl`; use a checkout path without spaces.
+If port 4100 is occupied, start the server with `NEATROOTS_PORT=4110` and keep
+`node packages/neatroots/dist/cli.js mock-llm --port 4111` running in another terminal. Run examples with
+`NEATROOTS_URL=http://localhost:4110 MOCK_LLM_URL=http://127.0.0.1:4111/v1` (mocks unless `REAL_LLM=1`).
 
 ## Preparing a pull request
 
